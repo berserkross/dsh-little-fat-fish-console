@@ -2,10 +2,29 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from dshconsole import addresses, textutil
 
 NL = chr(10)
+
+
+def tailscale_candidate(host: str = "100.124.206.105", port: int = 3080):
+    """手机可达的 Tailscale 候选（不再用旧的 Address 层）。"""
+    return addresses.Candidate(host=host, tier=addresses.TIER_TAILSCALE, label="Tailscale",
+                               url=f"http://{host}:{port}/", port=port)
+
+
+def lan_candidate(host: str = "192.168.1.20", port: int = 3080):
+    return addresses.Candidate(host=host, tier=addresses.TIER_LAN, label="以太网",
+                               url=f"http://{host}:{port}/", port=port)
+
+
+def plan_with(*cands, qr_url=None):
+    """手机访问计划的替身：只有界面真正读的那几个字段。"""
+    return SimpleNamespace(candidates=tuple(cands), qr_url=qr_url or (cands[0].url if cands else None),
+                           mode="serve" if cands else "none", port=3080, failures=(),
+                           next_step="", serve_host="", scheme="http")
 
 
 class RedactTests(unittest.TestCase):
@@ -56,12 +75,14 @@ class GuiLogTests(unittest.TestCase):
         cls.gui = dsh_gui
         cls.app_cls = dsh_gui.ConsoleApp
 
-    def make_app(self):
+    def make_app(self, plan_obj=None):
         class Fake:
             def __init__(self):
                 self.logged = []
                 self.clipboard = ""
                 self._token = "http://127.0.0.1:3080/?token=abc123"
+                self._phone_now = plan_obj
+                self._phone_planner = lambda *args, **kwargs: plan_obj
 
             def clipboard_clear(self):
                 self.clipboard = ""
@@ -78,7 +99,10 @@ class GuiLogTests(unittest.TestCase):
             def _current_token(self):
                 return self._token
 
-        return Fake()
+        app = Fake()
+        for name in ("_phone_plan_for_ui", "_pick_phone_address"):
+            setattr(app, name, getattr(self.app_cls, name).__get__(app, type(app)))
+        return app
 
     def test_copy_local_masks_log_but_keeps_full_clipboard(self):
         app = self.make_app()
@@ -87,10 +111,10 @@ class GuiLogTests(unittest.TestCase):
         self.assertIn("token=****", app.logged[-1])
         self.assertNotIn("abc123", "".join(app.logged))
 
-    def test_copy_uses_the_chosen_address_and_masks_the_token(self):
-        app = self.make_app()
-        chosen = addresses.Address("100.124.206.105", "Tailscale", "tailscale")
-        app._ask_address = lambda title, kinds=None: (chosen, 3080)   # 下拉里选中的那一条
+    def test_copy_uses_the_chosen_phone_address_and_masks_the_token(self):
+        tail, lan = tailscale_candidate(), lan_candidate()
+        app = self.make_app(plan_with(tail, lan))
+        app._ask_address = lambda *args, **kwargs: (tail, 3080)   # 下拉里选中的那一条
         self.app_cls.on_copy(app)
         self.assertEqual(app.clipboard, "http://100.124.206.105:3080/?token=abc123")
         logs = "".join(app.logged)
@@ -98,19 +122,19 @@ class GuiLogTests(unittest.TestCase):
         self.assertIn("token=****", logs)
         self.assertNotIn("abc123", logs)
 
-    def test_copy_honours_the_edited_port(self):
-        app = self.make_app()
-        chosen = addresses.Address("10.23.115.16", "以太网", "lan")
-        app._ask_address = lambda title, kinds=None: (chosen, 3099)
+    def test_copy_skips_the_dialog_when_only_one_candidate(self):
+        only = tailscale_candidate("100.124.206.105", 3099)
+        app = self.make_app(plan_with(only))
+        app._ask_address = lambda *args, **kwargs: self.fail("只有一条候选时不该弹选择框")
         self.app_cls.on_copy(app)
-        self.assertEqual(app.clipboard, "http://10.23.115.16:3099/?token=abc123")
+        self.assertEqual(app.clipboard, "http://100.124.206.105:3099/?token=abc123")
 
     def test_cancelled_chooser_copies_nothing(self):
-        app = self.make_app()
-        app._ask_address = lambda title, kinds=None: None
+        app = self.make_app(plan_with(tailscale_candidate(), lan_candidate()))
+        app._ask_address = lambda *args, **kwargs: None
         self.app_cls.on_copy(app)
         self.assertEqual(app.clipboard, "")
-        self.assertEqual(app.logged, [])
+        self.assertIn("取消", "".join(app.logged))
 
     def test_stop_refuses_when_pids_are_unknown(self):
         app = self.make_app()

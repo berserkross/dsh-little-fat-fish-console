@@ -18,13 +18,14 @@ import threading
 import time
 from pathlib import Path
 from tkinter import filedialog, messagebox
+from urllib.parse import urlsplit
 
 import customtkinter as ctk
 from PIL import Image
 
-from dshconsole import (addresses, adopt, config, diagnostics, errors, logtail, probe,
-                        psrun, resources, single, snapshot, status, tasks, textutil, tray,
-                        ui_theme, widgets)
+from dshconsole import (addresses, adopt, config, diagnostics, errors, logtail, phone,
+                        probe, psrun, resources, single, snapshot, status, tailscale, tasks,
+                        textutil, tray, ui_theme, widgets)
 from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BADGE_SIZE, BG, BORDER,
                                  BORDER_STRONG, CARD, CARD2, CARD3, CARD_RADIUS, CHIP,
                                  CHIP_HOVER, CHIP_RADIUS, CYAN, DIM, EMPTY_LOG_HINT, FAINT,
@@ -207,6 +208,95 @@ def make_qr(url: str):
     return qr.make_image(fill_color="black", back_color="white").get_image()
 
 
+NO_PHONE_ROW = "（没有手机可达地址）"
+
+
+def phone_rows(plan_obj) -> list:
+    """手机候选地址行（服务端给什么顺序就是什么顺序）：[(显示文本, Candidate)]。"""
+    if plan_obj is None:
+        return []
+    return [(cand.display(), cand) for cand in getattr(plan_obj, "candidates", ())]
+
+
+def phone_default_row(plan_obj) -> "str | None":
+    """默认选中的那条：二维码计划（qr_url）对应的优先，否则第一条；没候选就是 None。"""
+    rows = phone_rows(plan_obj)
+    if not rows:
+        return None
+    want = getattr(plan_obj, "qr_url", None)
+    for text, cand in rows:
+        if want and cand.url == want:
+            return text
+    return rows[0][0]
+
+
+def phone_candidate(plan_obj, choice=None):
+    """按下拉文本找回候选；给不出手机能打开的地址就返回 None（绝不换一条顶替）。"""
+    rows = phone_rows(plan_obj)
+    if not rows:
+        return None
+    if choice is None:
+        want = getattr(plan_obj, "qr_url", None)
+        found = (next((cand for _t, cand in rows if want and cand.url == want), None)
+                 or rows[0][1])
+    else:
+        found = next((cand for text, cand in rows if text == choice), None)
+    if found is None or not found.phone_reachable or addresses.is_loopback(found.host):
+        return None
+    return found
+
+
+def phone_candidate_url(cand, token: "str | None") -> "str | None":
+    """候选 → 手机能打开的地址。回环/不可用/没 token 一律 None：手机打不开就不给。"""
+    if cand is None or not token:
+        return None
+    if not cand.phone_reachable or addresses.is_loopback(cand.host):
+        return None
+    if "token=" in cand.url:
+        return cand.url
+    sep = "&" if "?" in cand.url else "?"
+    return f"{cand.url}{sep}token={token_suffix(token)}"
+
+
+def phone_reason_text(plan_obj) -> str:
+    """tailscale 给的结构化失败原因，原样拼成多行（不替它改文案）。"""
+    if plan_obj is None:
+        return ""
+    return "\n".join(reason.text for reason in getattr(plan_obj, "failures", ()))
+
+
+def phone_next_steps(plan_obj) -> str:
+    """没有手机可达地址时的下一步：计划自己说的下一步 + 判定清单 + 原因，一行一条。"""
+    if plan_obj is None:
+        return ("手机访问探测失败：这次没拿到 tailscale 的状态。\n"
+                "点「开启手机访问（UAC）」重试，原因见日志。")
+    lines = [plan_obj.next_step] if plan_obj.next_step else []
+    lines.extend(phone.phone_checklist(plan_obj))
+    lines.extend(phone_reason_text(plan_obj).splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+def switch_args(plan_obj=None) -> list:
+    """切手机模式的脚本参数：serve 已就绪就把域名和默认端口交给 -ServeHost（trusted-host）。"""
+    args = list(_ps_args())
+    host = getattr(plan_obj, "serve_host", "") or ""
+    if host:
+        scheme = getattr(plan_obj, "scheme", addresses.SCHEME_HTTP)
+        port = addresses.SCHEME_PORTS.get(scheme, addresses.SCHEME_PORTS[addresses.SCHEME_HTTP])
+        args += ["-ServeHost", addresses.host_port(host, port)]
+    return args
+
+
+def _selftest_phone_plan(port: int = 3080):
+    """自检用的手机访问计划：注入域名 + 100.x 两条候选，走纯计算，不碰真 tailscale。"""
+    facts = tailscale.Facts(backend_state=tailscale.RUNNING,
+                            dns_name="selftest.tail1234.ts.net",
+                            tailscale_ips=("100.101.102.103",),
+                            magic_dns_enabled=True, cert_domains=())
+    detection = tailscale.Detection(cli="tailscale.exe", facts=facts)
+    return phone.plan(port, detection=detection, addresses_list=[])
+
+
 def mascot_image() -> Image.Image | None:
     """读取 DeepSeek 鲸鱼娘图标（256x256 RGBA，取最大帧）。"""
     candidates = _icon_candidates()
@@ -242,6 +332,8 @@ class ConsoleApp(ctk.CTk):
         except Exception:      # noqa: BLE001 - 无合成器（远程桌面 / 极简 WM）
             pass
         self._qr_photo = None
+        self._qr_url: str | None = None          # 真正编码进二维码的地址（自检要证据）
+        self._phone_now = None                   # 最近一次手机访问计划：浮层与复制共用
         self._qr_overlay: widgets.QrOverlay | None = None
         self._log_overlay: widgets.LogOverlay | None = None
         self._log_rows = LOG_ROWS_MIN           # 日志区露几行（按内容长，要更多走浮层）
@@ -257,6 +349,9 @@ class ConsoleApp(ctk.CTk):
         self._pids_provider = dsh_pids
         self._port_open = port_open
         self._status_provider = self._load_status
+        self._phone_planner = phone.detect_plan     # tailscale 探测/编排入口
+        self._serve_reset = tailscale.reset_serve    # 恢复本机前先撤掉 serve
+        self._run_switch = run_ps                    # 提权切换脚本入口
         self._snapshot = snapshot.Snapshot(lambda: self._status_provider(), ttl=STATUS_TTL)
         self._queue = tasks.TaskQueue(post=self._post, on_change=self._on_queue_change)
         self._activator = single.Activator()    # 第二个实例叫醒窗口用（见 _poll_activate）
@@ -1339,6 +1434,10 @@ class ConsoleApp(ctk.CTk):
             return
         overlay = widgets.QrOverlay(self, on_close=self._on_qr_overlay_closed)
         self._qr_overlay = overlay
+        try:
+            overlay.hint.configure(text="正在探测手机可达地址…")
+        except Exception:      # noqa: BLE001 - 浮层刚建就被关
+            pass
         self._fill_qr_addresses()
         try:
             overlay.picker.configure(command=self._on_qr_pick)
@@ -1347,32 +1446,54 @@ class ConsoleApp(ctk.CTk):
             pass
         overlay.show()
 
+    def _phone_plan_for_ui(self):
+        """算一次手机访问计划；探测炸了返回 None（原因进日志，界面不许塌）。"""
+        try:
+            plan_obj = self._phone_planner(PORT, self.log_async)
+        except Exception as exc:      # noqa: BLE001 - tailscale 没装/超时也不该带崩界面
+            self.log_async(f"手机访问探测失败：{exc}")
+            plan_obj = None
+        self._phone_now = plan_obj
+        return plan_obj
+
     def _fill_qr_addresses(self) -> None:
-        """把已知地址灌进下拉，并先画第一张（一个都没有时退回本机）。"""
+        """把手机访问计划的候选灌进下拉，并先画一张；一条都没有就说清下一步。"""
         overlay = self._qr_overlay
         if overlay is None:
             return
+        plan_obj = self._phone_plan_for_ui()
+        rows = phone_rows(plan_obj)
+        choices = [text for text, _cand in rows] or [NO_PHONE_ROW]
         try:
-            known, _unknown = self._address_options()
-            options = [text for text, _addr in known] or [f"本机  127.0.0.1:{PORT}"]
-            overlay.picker.configure(values=options)
-            overlay.picker.set(options[0])
-        except Exception:      # noqa: BLE001
-            options = [f"本机  127.0.0.1:{PORT}"]
-        self._on_qr_pick(options[0])
+            overlay.picker.configure(values=choices)
+            overlay.picker.set(phone_default_row(plan_obj) or NO_PHONE_ROW)
+        except Exception:      # noqa: BLE001 - 浮层刚建就被关
+            pass
+        self._on_qr_pick(phone_default_row(plan_obj) or NO_PHONE_ROW)
 
-    def _on_qr_pick(self, choice: str) -> None:
-        """选中哪个地址就立刻重画二维码（token 打码后才写进浮层的小字）。"""
-        token = self._current_token()
-        if not token:
+    def _on_qr_pick(self, choice: str = "") -> None:
+        """选中哪条就画哪条；手机打不开的一律不画码，只写下一步。"""
+        plan_obj = self._phone_now
+        cand = phone_candidate(plan_obj, choice) if choice else phone_candidate(plan_obj)
+        url = phone_candidate_url(cand, self._current_token())
+        if url is None:
+            self._show_phone_steps(plan_obj)
             return
-        try:
-            known, _unknown = self._address_options()
-        except Exception:      # noqa: BLE001
-            known = []
-        addr = next((item for text, item in known if text == choice), None)
-        url = addr.url(PORT) if addr is not None else f"http://127.0.0.1:{PORT}/"
-        self._qr(f"{url}?token={token_suffix(token)}", "手机访问")
+        self._qr(url, "手机访问")
+
+    def _show_phone_steps(self, plan_obj=None) -> None:
+        """画不出二维码时：把「接下来该做什么」写进浮层那一格，旧码必须清掉。"""
+        self._qr_photo = None
+        self._qr_url = None
+        text = phone_next_steps(plan_obj if plan_obj is not None else self._phone_now)
+        overlay = self._qr_overlay
+        if overlay is not None:
+            try:
+                overlay.image_label.configure(image=None, text=text, wraplength=232)
+                overlay.hint.configure(text="二维码只在手机能打开时生成")
+            except Exception:      # noqa: BLE001 - 浮层已销毁
+                pass
+        self.logline("手机二维码未生成：" + " / ".join(text.splitlines()))
 
     def _on_qr_overlay_closed(self) -> None:
         self._qr_overlay = None
@@ -1507,8 +1628,16 @@ class ConsoleApp(ctk.CTk):
         self._submit("开启手机访问", self._phone_on)
 
     def _phone_on(self) -> None:
+        """开启手机访问：serve 已就绪就不提权；否则把 tailscale 的原话摆出来再跑脚本。"""
+        plan_obj = self._phone_plan_for_ui()
+        if plan_obj is not None and plan_obj.mode == phone.MODE_SERVE:
+            self.log_async("tailscale serve 已就绪，不需要提权：" +
+                           (plan_obj.qr_url or plan_obj.url or ""))
+            return
+        for line in phone_reason_text(plan_obj).splitlines():
+            self.log_async("tailscale 说：" + line)     # 结构化 reason 原样展示
         self.log_async("正在开启手机访问（将弹出 UAC 提权窗口，请点“是”并等待）…")
-        result = run_ps(SWITCH_PS1, *_ps_args(), "-NoPause", timeout=90)
+        result = self._run_switch(SWITCH_PS1, *switch_args(plan_obj), "-NoPause", timeout=120)
         self.log_async((result.stdout or "").strip()[-400:] or "切换脚本已在后台运行。")
         warned = False
         for _ in range(40):
@@ -1527,8 +1656,12 @@ class ConsoleApp(ctk.CTk):
         self._submit("恢复本机模式", self._phone_off)
 
     def _phone_off(self) -> None:
+        """恢复本机：先撤 tailscale serve（失败原样说），再撤端口转发与防火墙。"""
         self.log_async("正在恢复本机模式（UAC 提权窗口请点“是”）…")
-        r = run_ps(SWITCH_PS1, *_ps_args(), "-Restore", "-NoPause", timeout=90)
+        reason = self._serve_reset()
+        if reason is not None:
+            self.log_async("tailscale 说：" + reason.text)   # 不自己编文案
+        r = self._run_switch(SWITCH_PS1, *_ps_args(), "-Restore", "-NoPause", timeout=120)
         self.log_async((r.stdout or "").strip()[-300:] or "已提交。")
 
     # ---------------- 地址选择（C4：下拉 + 可改端口，不再手输 IP） ----------------
@@ -1551,9 +1684,16 @@ class ConsoleApp(ctk.CTk):
         unknown = [text for text, addr in rows if addr is None]
         return known, unknown
 
-    def _ask_address(self, title: str, kinds=None) -> "tuple | None":
-        """选地址 + 改端口。返回 (Address, port)；用户取消或没有可选地址返回 None。"""
-        known, unknown = self._address_options(kinds)
+    def _ask_address(self, title: str, kinds=None, rows=None,
+                     editable_port: bool = True) -> "tuple | None":
+        """选地址（可选改端口）。返回 (地址项, port)；取消或没有可选项返回 None。
+
+        rows 直接给候选（手机访问的 Candidate）：端口由候选自带，不再让人改。
+        """
+        if rows is not None:
+            known, unknown = list(rows), []
+        else:
+            known, unknown = self._address_options(kinds)
         if not known:
             detail = "；".join(unknown) or "探测结果为空"
             messagebox.showinfo("没有可用地址", f"未检测到可用地址：\n{detail}")
@@ -1561,7 +1701,7 @@ class ConsoleApp(ctk.CTk):
         picked: dict = {}
         win = ctk.CTkToplevel(self)
         win.title(title)
-        win.geometry("560x310")
+        win.geometry("560x310" if editable_port else "560x230")
         win.resizable(False, False)
         win.configure(fg_color=BG)
         win.transient(self)
@@ -1577,18 +1717,19 @@ class ConsoleApp(ctk.CTk):
                                  dynamic_resizing=False)
         menu.set(displays[0])
         menu.pack(padx=18, pady=(2, 10))
-        port_row = ctk.CTkFrame(win, fg_color="transparent")
-        port_row.pack(fill="x", padx=18, pady=(0, 8))
-        ctk.CTkLabel(port_row, text="端口", font=_font(11), text_color=DIM,
-                     width=60, anchor="w").pack(side="left")
-        port_entry = ctk.CTkEntry(port_row, width=120, height=32, fg_color=CARD2,
-                                  border_color=BORDER, text_color=TEXT,
-                                  font=_font(11))
-        port_entry.insert(0, str(PORT))
-        port_entry.pack(side="left", padx=(0, 10))
-        hint = ctk.CTkLabel(port_row, text="1-65535，默认 3080", font=_font(10),
-                            text_color=FAINT, anchor="w")
-        hint.pack(side="left")
+        port_entry = None
+        if editable_port:
+            port_row = ctk.CTkFrame(win, fg_color="transparent")
+            port_row.pack(fill="x", padx=18, pady=(0, 8))
+            ctk.CTkLabel(port_row, text="端口", font=_font(11), text_color=DIM,
+                         width=60, anchor="w").pack(side="left")
+            port_entry = ctk.CTkEntry(port_row, width=120, height=32, fg_color=CARD2,
+                                      border_color=BORDER, text_color=TEXT,
+                                      font=_font(11))
+            port_entry.insert(0, str(PORT))
+            port_entry.pack(side="left", padx=(0, 10))
+            ctk.CTkLabel(port_row, text="1-65535，默认 3080", font=_font(10),
+                         text_color=FAINT, anchor="w").pack(side="left")
         if unknown:
             # 探测失败必须显式写原因，不许静默给个空列表
             ctk.CTkLabel(win, text="；".join(unknown), font=_font(10),
@@ -1598,12 +1739,16 @@ class ConsoleApp(ctk.CTk):
         err.pack(fill="x", padx=18, pady=(4, 0))
 
         def confirm() -> None:
+            index = displays.index(menu.get()) if menu.get() in displays else 0
+            if not editable_port:
+                picked["value"] = (known[index][1], PORT)   # 候选自带端口
+                win.destroy()
+                return
             try:
                 port = addresses.validate_port(port_entry.get())
             except ValueError as exc:
                 err.configure(text=str(exc))     # 就地提示，不弹第二个窗口
                 return
-            index = displays.index(menu.get()) if menu.get() in displays else 0
             picked["value"] = (known[index][1], port)
             win.destroy()
 
@@ -1627,20 +1772,40 @@ class ConsoleApp(ctk.CTk):
         self.wait_window(win)
         return picked.get("value")
 
+    def _pick_phone_address(self, rows, default=None):
+        """候选选择框：只有一条就直接用，不拿弹窗打扰用户。"""
+        if not rows:
+            return None
+        if len(rows) == 1:
+            return rows[0][1]
+        picked = self._ask_address("复制手机访问地址", rows=rows, editable_port=False)
+        return picked[0] if picked else None
+
     def on_copy(self) -> None:
-        """复制访问地址：下拉选地址、端口可改，日志里 token 打码。"""
+        """复制手机访问地址：只列手机能打开的候选，日志里 token 打码。"""
         token = self._current_token()
         if not token:
             messagebox.showinfo("提示", "还没有可用的 token：请先启动 Harness。")
             return
-        chosen = self._ask_address("复制访问地址")
-        if chosen is None:
+        plan_obj = self._phone_plan_for_ui()
+        rows = [(text, cand) for text, cand in phone_rows(plan_obj) if cand.phone_reachable]
+        if not rows:
+            detail = phone_next_steps(plan_obj)
+            for line in detail.splitlines():
+                self.logline("手机地址不可用：" + line)
+            messagebox.showinfo("没有手机可达地址", detail)
             return
-        addr, port = chosen
-        url = f"{addr.url(port)}?token={token_suffix(token)}"
+        picked = self._pick_phone_address(rows, phone_default_row(plan_obj))
+        if picked is None:
+            self.logline("已取消，剪贴板没有改动。")
+            return
+        url = phone_candidate_url(picked, token)
+        if url is None:
+            self.logline("这条地址手机打不开，没有复制：" + picked.display())
+            return
         self.clipboard_clear()
         self.clipboard_append(url)               # 剪贴板放完整地址：这是功能
-        self.logline(f"已复制（{addr.label}）：" + textutil.redact(url))
+        self.logline(f"已复制（{picked.label}）：" + textutil.redact(url))
 
     # ---------------- 诊断包（C3：整包脱敏） ----------------
     def on_export_diag(self) -> None:
@@ -1688,6 +1853,7 @@ class ConsoleApp(ctk.CTk):
             ctk_img = ctk.CTkImage(light_image=img, dark_image=img,
                                    size=(img.width, img.height))
             self._qr_photo = ctk_img      # 保持引用防 GC
+            self._qr_url = url           # 实际编码进二维码的地址
             overlay = self._qr_overlay
             if overlay is not None:
                 overlay.image_label.configure(image=ctk_img, text="")
@@ -1699,6 +1865,7 @@ class ConsoleApp(ctk.CTk):
     def clear_qr(self) -> None:
         """清除二维码（内存引用一并释放，不产生任何文件）。"""
         self._qr_photo = None
+        self._qr_url = None
         overlay = self._qr_overlay
         if overlay is None:
             return
@@ -1773,9 +1940,22 @@ def selftest() -> int:
 
     # 二维码住浮层：主界面不常驻，弹层关掉就清干净
     app._token = "selftest-token"    # 必须在最后一次 _apply_status 之后（否则被真 token 覆盖）
+    # 手机访问替身：域名 + 100.x 两条候选，走纯计算，不碰真 tailscale
+    app._phone_planner = lambda *args, **kwargs: _selftest_phone_plan(PORT)
     app.on_phone_access()
     app.update()
     ok_qr = app._qr_photo is not None
+    plan_now = getattr(app, "_phone_now", None)
+    phone_mode = getattr(plan_now, "mode", phone.MODE_NONE)
+    phone_candidates = len(getattr(plan_now, "candidates", ()) or ())
+    phone_qr = getattr(plan_now, "qr_url", None)
+    phone_netloc = urlsplit(phone_qr).netloc if phone_qr else "none"
+    phone_copy = phone_candidate_url(phone_candidate(plan_now), "selftest-token")
+    # 有非回环候选时，二维码编进去的地址和「复制手机访问地址」都不许是 127.0.0.1
+    ok_phone_qr = bool(phone_candidates and phone_qr and app._qr_url
+                       and "127.0.0.1" not in phone_qr
+                       and "127.0.0.1" not in app._qr_url)
+    ok_phone_copy = bool(phone_copy) and "127.0.0.1" not in phone_copy
     ok_overlay_open = app._qr_overlay is not None
     app._close_overlays()
     app.update()
@@ -1882,7 +2062,7 @@ def selftest() -> int:
               ok_ring, ok_primary, ok_primary_deg, ok_menu, ok_overlay_open,
               ok_overlay_closed, ok_rows, log_expanded, ok_phone_on,
               ok_toggle_label, ok_fit, ok_primary_full, ok_empty, ok_glass,
-              ok_fit_full])
+              ok_fit_full, ok_phone_qr, ok_phone_copy])
     marker = Path(os.environ.get("TEMP", ".")) / "dsh-gui-selftest.txt"
     marker.write_text(
         f"OK {time.strftime('%Y-%m-%d %H:%M:%S')} qr={ok_qr} clear={ok_clear} "
@@ -1899,6 +2079,10 @@ def selftest() -> int:
         f"hero_art={widgets.art_image('hero') is not None} "
         f"ico={ico_field} "
         f"alpha={alpha_now} "
+        # 手机访问那几项（phone-v2 接入后追加，前面的字段不动）
+        f"phone_mode={phone_mode} phone_url={phone_netloc} "
+        f"phone_reachable={bool(phone_qr)} phone_candidates={phone_candidates} "
+        f"phone_qr_ok={ok_phone_qr} phone_copy_ok={ok_phone_copy} "
         "\n", encoding="utf-8")
     if sys.stdout:
         print(f"SELFTEST {'OK' if ok else 'FAILED'}")
