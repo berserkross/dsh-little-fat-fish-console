@@ -12,8 +12,12 @@ from dshconsole import config
 
 
 def make_harness(root: Path, name: str = "fake-harness") -> Path:
-    """造一个「长得像 harness」的目录：bin.js 存在即成立。"""
-    harness = root / name
+    """造一个「长得像 harness」的目录：bin.js 存在即成立。
+
+    返回规范（长名）路径：被测代码的出口一律经过 canonical_path()，用 8.3 短名
+    拼出来的期望值在 CI 的 runner 上会永远不相等。
+    """
+    harness = Path(root).resolve() / name
     bin_js = harness / config.BIN_JS_REL
     bin_js.parent.mkdir(parents=True, exist_ok=True)
     bin_js.write_text("// stub\n", encoding="utf-8")
@@ -21,7 +25,7 @@ def make_harness(root: Path, name: str = "fake-harness") -> Path:
 
 
 def make_file(root: Path, name: str) -> Path:
-    path = root / name
+    path = Path(root).resolve() / name
     path.write_text("stub", encoding="utf-8")
     return path
 
@@ -31,7 +35,7 @@ class HermeticBase(unittest.TestCase):
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
+        self.tmp = Path(self._tmp.name).resolve()
         self.empty = self.tmp / "empty"
         self.empty.mkdir()
         patchers = [
