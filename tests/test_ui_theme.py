@@ -48,9 +48,26 @@ class SizeConstantTests(unittest.TestCase):
         self.assertLessEqual(ui_theme.STATUS_LAMP, 16)
         self.assertGreater(ui_theme.STATUS_BAR_H, ui_theme.STATUS_LAMP * 2)
 
-    def test_log_defaults_to_15_rows(self):
-        self.assertEqual(ui_theme.LOG_ROWS_COLLAPSED, 15)
+    def test_log_rows_are_content_driven(self):
+        """日志区高度跟着内容长：下限 5~6 行、上限有顶，中间按行数走。"""
+        self.assertGreaterEqual(ui_theme.LOG_ROWS_MIN, 5)
+        self.assertLessEqual(ui_theme.LOG_ROWS_MIN, 6)
+        self.assertGreater(ui_theme.LOG_ROWS_MAX, ui_theme.LOG_ROWS_MIN)
         self.assertGreater(ui_theme.LOG_LINE_PX, 0)
+        self.assertEqual(ui_theme.log_rows(0, 10 ** 6), ui_theme.LOG_ROWS_MIN)
+        self.assertEqual(ui_theme.log_rows(ui_theme.LOG_ROWS_MIN + 2, 10 ** 6),
+                         ui_theme.LOG_ROWS_MIN + 2)
+        self.assertEqual(ui_theme.log_rows(10 ** 6, 10 ** 6), ui_theme.LOG_ROWS_MAX)
+        # 窗口矮的时候不许硬撑：可用像素也参与钳制
+        self.assertEqual(ui_theme.log_rows(10 ** 6, ui_theme.LOG_LINE_PX), ui_theme.LOG_ROWS_MIN)
+
+    def test_header_and_empty_state_sizes(self):
+        """头部 48~56px 的鲸鱼娘底盘；空态插画要比底盘明显大一号。"""
+        self.assertGreaterEqual(ui_theme.BADGE_SIZE, 48)
+        self.assertLessEqual(ui_theme.BADGE_SIZE, 56)
+        self.assertLessEqual(ui_theme.BADGE_SIZE, ui_theme.HEADER_H)
+        self.assertGreater(ui_theme.HERO_SIZE, ui_theme.BADGE_SIZE * 2)
+        self.assertTrue(ui_theme.EMPTY_LOG_HINT.strip())
 
     def test_overlay_sizes_are_positive(self):
         for width, height in (ui_theme.OVERLAY_QR, ui_theme.OVERLAY_LOG):
@@ -80,6 +97,72 @@ class SizeConstantTests(unittest.TestCase):
     def test_window_min_fits_inside_the_default_window(self):
         self.assertLessEqual(ui_theme.WINDOW_MIN[0], ui_theme.WINDOW_SIZE[0])
         self.assertLessEqual(ui_theme.WINDOW_MIN[1], ui_theme.WINDOW_SIZE[1])
+
+
+class GlassTokenTests(unittest.TestCase):
+    """玻璃板参数：半透明只活在渲染图里，装饰必须淡到不抢字。"""
+
+    def test_glass_tokens_are_rgba(self):
+        for name in ("GLASS_TINT", "GLASS_EDGE", "GLASS_HIGHLIGHT", "GLASS_SHADOW",
+                     "GLOW", "GRID_LINE", "STAR_DOT"):
+            token = getattr(ui_theme, name)
+            self.assertEqual(len(token), 4, name)
+            self.assertTrue(all(0 <= int(v) <= 255 for v in token), name)
+
+    def test_substrate_decor_is_faint(self):
+        """网格与星点只是衬底：不透明度都不许超过 40/255（约 16%）。"""
+        self.assertLessEqual(ui_theme.GRID_LINE[3], 40)
+        self.assertLessEqual(ui_theme.STAR_DOT[3], 40)
+        self.assertGreater(ui_theme.PANEL_RIM, 0)
+
+    def test_window_alpha_stays_in_the_tested_band(self):
+        self.assertGreaterEqual(ui_theme.WINDOW_ALPHA, 0.94)
+        self.assertLessEqual(ui_theme.WINDOW_ALPHA, 0.97)
+
+    def test_contrast_ratios_clear_wcag_aa(self):
+        """正文类文字 ≥ 4.5:1。改配色先跑这条，观感不许压过可读性。"""
+        pairs = [(ui_theme.LOG_TEXT, ui_theme.PANEL_DEEP),
+                 (ui_theme.TEXT, ui_theme.CARD),
+                 (ui_theme.TEXT, ui_theme.CHIP),
+                 (ui_theme.TEXT, ui_theme.CHIP_HOVER),
+                 (ui_theme.DIM, ui_theme.CARD),
+                 (ui_theme.FAINT, ui_theme.CARD),
+                 ("#FFFFFF", ui_theme.PRIMARY),
+                 ("#FFFFFF", ui_theme.PRIMARY_HOVER)]
+        for fore, back in pairs:
+            self.assertGreaterEqual(ui_theme.contrast_ratio(fore, back), 4.5,
+                                    f"{fore} on {back}")
+
+    def test_contrast_helper_is_symmetric_and_sane(self):
+        self.assertAlmostEqual(ui_theme.contrast_ratio("#FFFFFF", "#000000"), 21.0, places=1)
+        self.assertAlmostEqual(ui_theme.contrast_ratio("#000000", "#FFFFFF"), 21.0, places=1)
+        self.assertAlmostEqual(ui_theme.contrast_ratio("#123456", "#123456"), 1.0, places=2)
+
+
+class AssetFallbackTests(unittest.TestCase):
+    """素材缺失必须优雅回退：不许抛异常，也不许返回空白图。"""
+
+    def test_art_loader_tolerates_missing_art(self):
+        from dshconsole import widgets as w
+        for role in w.ART_FILES:
+            got = w.art_image(role)        # 有图是 Path，没图是 None，两者都合法
+            self.assertTrue(got is None or hasattr(got, "is_file"), role)
+
+    def test_vector_fallbacks_paint_something(self):
+        from dshconsole import widgets as w
+        for image in (w.mascot("idle", 72, ui_theme.CARD),
+                      w.badge(52, ui_theme.CARD),
+                      w.hero_picture(132, ui_theme.PANEL_DEEP),
+                      w._whale(48, ui_theme.CARD)):
+            self.assertEqual(image.size, image.size)          # 是 PIL 图
+            self.assertGreater(image.size[0], 0)
+            alpha = image.convert("RGBA").getchannel("A")
+            self.assertGreater(alpha.getextrema()[1], 0, "回退图整张全透明 = 白块")
+
+    def test_blend_returns_hex(self):
+        from dshconsole import widgets as w
+        self.assertEqual(w.blend("#FFFFFF", "#000000", 0.5), "#808080")
+        self.assertEqual(w.blend(ui_theme.PRIMARY_GLOW, ui_theme.CARD, 0.5), "#30449B")
 
 
 class PrimaryActionTests(unittest.TestCase):
