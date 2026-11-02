@@ -21,7 +21,8 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-from dshconsole import config, probe, psrun, resources, status, textutil
+from dshconsole import (adopt, config, errors, probe, psrun, resources, single, status,
+                        textutil)
 
 CFG = config.resolve()          # 本机探测结果；缺项为 None，探测失败不抛异常
 HARNESS = CFG.harness
@@ -31,6 +32,8 @@ TOKEN_LOG = CFG.token_log
 ICON_FILE = resources.icon_path()
 CREATE_NO_WINDOW = 0x08000000      # 自检里伪造进程时别闪出控制台窗口
 PORT = CFG.port
+APP_TITLE = "DSH 控制台"            # 单实例守卫靠窗口标题找回已有窗口，两处必须一致
+_APP = None                        # 当前窗口实例：未捕获异常写日志用（见 _report）
 
 # ---------------- 主题（DeepSeek 蓝） ----------------
 PRIMARY = "#4D6BFE"        # DeepSeek 品牌蓝
@@ -109,6 +112,34 @@ def dsh_pids() -> tuple[list[int] | None, str | None]:
     return probe.dsh_processes(CFG.bin_js)
 
 
+def _report(text: str) -> None:
+    """未捕获异常的出口：有窗口就写日志框，没有窗口就写 stderr —— 绝不静默。"""
+    app = _APP
+    if app is not None:
+        try:
+            app.log_async(text)
+            return
+        except Exception:  # noqa: BLE001 - 窗口已销毁：退回 stderr
+            pass
+    try:
+        print(text, file=sys.stderr)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _info_blocking(title: str, message: str) -> None:
+    """没有窗口可用时的一次性说明框；连 Tk 都起不来就只写 stderr。"""
+    try:
+        root = ctk.CTk()
+        root.withdraw()
+        try:
+            messagebox.showinfo(title, message, parent=root)
+        finally:
+            root.destroy()
+    except Exception:  # noqa: BLE001
+        print(message, file=sys.stderr)
+
+
 def phone_ready() -> tuple[bool | None, str | None]:
     """手机访问是否真的开启：端口转发指向本机端口 + 防火墙规则都在。"""
     ok, _targets, notes = status.probe_phone(CFG)
@@ -160,7 +191,7 @@ def mascot_image() -> Image.Image | None:
 class ConsoleApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("DSH 控制台")
+        self.title(APP_TITLE)
         self._set_icon()
         self.geometry("720x880")
         self.minsize(660, 780)
@@ -168,6 +199,13 @@ class ConsoleApp(ctk.CTk):
         self._busy = False
         self._qr_photo = None
         self._token: str | None = None
+        self._candidates: list[adopt.Candidate] = []   # 端口被占用时查到的别的 DSH 进程
+        self._adopt_shown = False
+        # 可注入的探测口：自检用替身，不再改写模块全局（B2-3）
+        self._pids_provider = dsh_pids
+        self._port_open = port_open
+        self._status_provider = lambda: status.probe_status(CFG)
+        self.report_callback_exception = self._on_callback_error
         self._build()
         self.logline(f"DSH：{HARNESS or '未检测到'}  ·  端口 {PORT}  ·  node：{CFG.node or '未检测到'}")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -217,6 +255,11 @@ class ConsoleApp(ctk.CTk):
         self.lbl_net = ctk.CTkLabel(card, text="网络：--", font=_font(11),
                                     text_color=DIM, anchor="w", justify="left")
         self.lbl_net.pack(fill="x", padx=14, pady=(4, 12))
+        # 采纳按钮：只有「异常（端口被占用）且查到占用者」时才 pack 出来（见 _sync_adopt_button）
+        self.btn_adopt = ctk.CTkButton(
+            card, text="改为控制运行中的实例", command=self.on_adopt,
+            fg_color=VIOLET, hover_color=VIOLET_DARK, text_color="#FFFFFF",
+            font=_font(12, True), height=36, corner_radius=10, cursor="hand2")
 
         # --- 按钮区 ---
         grid = ctk.CTkFrame(self, fg_color="transparent")
@@ -281,8 +324,15 @@ class ConsoleApp(ctk.CTk):
         self.log.configure(state="disabled")
 
     def log_async(self, msg: str) -> None:
-        """线程安全写日志：委托回 Tk 主线程，避免跨线程操作控件。"""
-        self.after(0, self.logline, msg)
+        """线程安全写日志：委托回 Tk 主线程，避免跨线程操作控件。
+
+        窗口已销毁时 Tk 会拒绝投递（RuntimeError/TclError），此时退回 stderr，
+        绝不让工作线程自己炸掉。
+        """
+        try:
+            self.after(0, self.logline, msg)
+        except Exception:  # noqa: BLE001 - 退出路径上窗口可能已经没了
+            print(msg, file=sys.stderr)
 
     def _thread(self, fn, *args) -> None:
         if self._busy:
@@ -291,25 +341,42 @@ class ConsoleApp(ctk.CTk):
         self._busy = True
         threading.Thread(target=self._wrap, args=(fn, *args), daemon=True).start()
 
+    def _on_callback_error(self, exc_type, exc, tb) -> None:
+        """Tk 回调里的异常：写脱敏 traceback 并立刻放开忙碌锁，界面不会卡在「进行中」。"""
+        text = errors.summarize(exc_type, exc, tb)
+        self._busy = False
+        try:
+            self.logline("界面回调异常：\n" + text)
+        except Exception:  # noqa: BLE001 - 日志框都坏了也不能把异常吞掉
+            print("界面回调异常：\n" + text, file=sys.stderr)
+
     def _wrap(self, fn, *args) -> None:
         try:
             fn(*args)
-        except Exception as exc:  # noqa: BLE001
-            self.after(0, self.logline, f"出错：{exc}")
+        except Exception as exc:  # noqa: BLE001 - 后台线程异常必须显式落到日志
+            self.log_async(f"出错：{exc}\n"
+                           + errors.summarize(type(exc), exc, exc.__traceback__))
         finally:
-            self._busy = False
-            self.after(0, self.refresh)
+            self._busy = False          # 无论成败都放开，绝不把界面锁在「进行中」
+            try:
+                self.after(0, self.refresh)
+            except Exception:  # noqa: BLE001 - 窗口已关闭：Tk 会抛，退出路径不该再炸
+                pass
 
     # ---------------- status ----------------
     def refresh(self) -> None:
         self.clear_qr()  # 刷新即清除旧二维码，避免堆积/残留
         def work() -> None:
             try:
-                state = status.probe_status(CFG)
+                state = self._status_provider()
             except Exception as exc:  # noqa: BLE001
-                self.after(0, self.logline, f"状态刷新失败：{exc}")
+                self.log_async(f"状态刷新失败：{exc}\n"
+                               + errors.summarize(type(exc), exc, exc.__traceback__))
                 return
-            self.after(0, self._apply_status, state)
+            try:
+                self.after(0, self._apply_status, state)
+            except Exception:  # noqa: BLE001 - 窗口已关闭，没人需要这份状态了
+                pass
         threading.Thread(target=work, daemon=True).start()
 
     def _apply_status(self, state: "status.Status") -> None:
@@ -330,7 +397,71 @@ class ConsoleApp(ctk.CTk):
                  f"Token：{'已获取（点「复制手机地址」发送）' if self._token else '未获取（启动后生成）'}")
         for note in state.notes:
             self.logline(note)
+        self._candidates = (adopt.from_processes(state.others)
+                            if state.phase is status.Phase.DEGRADED else [])
+        self._sync_adopt_button()
+
+    def _sync_adopt_button(self) -> None:
+        """异常（端口被占用）且查到占用者时才摆出采纳按钮；状态一正常就收起。"""
+        if not self._candidates:
+            if self._adopt_shown:
+                self.btn_adopt.pack_forget()
+                self._adopt_shown = False
+            return
+        count = len(self._candidates)
+        text = (f"🔧  改为控制运行中的实例（PID {self._candidates[0].pid}）" if count == 1
+                else f"🔧  改为控制运行中的实例（{count} 个候选，点击后选择）")
+        self.btn_adopt.configure(text=text)
+        if not self._adopt_shown:
+            self.btn_adopt.pack(fill="x", padx=14, pady=(0, 12))
+            self._adopt_shown = True
+
     # ---------------- actions ----------------
+    def on_adopt(self) -> None:
+        """采纳正在跑的那处安装：把它的 harness 写回 config.json。"""
+        self._thread(self._adopt)
+
+    def _adopt(self) -> None:
+        global CFG, HARNESS, TOKEN_LOG, PORT
+        cands = list(self._candidates)
+        if not cands:
+            self.log_async("没有可采纳的候选进程（先刷新状态再试）。")
+            return
+        if len(cands) == 1:
+            chosen = cands[0]
+        else:
+            index = self._ask_main(self._pick_candidate, cands)
+            if index is None:
+                self.log_async("已取消，config.json 未改动。")
+                return
+            chosen = cands[index]
+        new_cfg, reason = adopt.adopt(CFG, chosen)
+        if new_cfg is None:
+            self.log_async(reason)
+            self._ask_main(messagebox.showerror, "无法采纳", reason)
+            return
+        CFG, HARNESS, PORT = new_cfg, new_cfg.harness, new_cfg.port
+        TOKEN_LOG = new_cfg.token_log
+        self.log_async(reason)
+        # 采纳成功就没得选了：先把按钮收起来，别让用户对着一个过时的按钮再点一次。
+        # （完整重探由 _wrap 的 finally 触发，探测要十几秒，等它回来才收太迟钝。）
+        self._candidates = []
+        self.after(0, self._sync_adopt_button)
+
+    def _pick_candidate(self, cands: list) -> "int | None":
+        """多个候选时让用户选序号，不默认第一个（选错就去控制错误的实例了）。"""
+        listing = "\n".join(f"{i + 1}. {c.label}" for i, c in enumerate(cands))
+        dialog = ctk.CTkInputDialog(
+            text=f"检测到 {len(cands)} 处正在运行的 DSH，请输入要接管的序号：\n{listing}",
+            title="选择要控制的实例")
+        raw = dialog.get_input()
+        if not raw:
+            return None
+        try:
+            index = int(raw.strip()) - 1
+        except ValueError:
+            return None
+        return index if 0 <= index < len(cands) else None
     def on_start(self) -> None:
         self._thread(self._start)
 
@@ -347,7 +478,7 @@ class ConsoleApp(ctk.CTk):
         self._thread(self._stop_prepare)
 
     def _stop_prepare(self) -> None:
-        pids, err = dsh_pids()
+        pids, err = self._pids_provider()
         if pids is None:
             self.log_async(f"未知：node 进程查不到（{err}），已取消停止，避免误杀。")
             self._ask_main(messagebox.showerror, "无法停止",
@@ -379,10 +510,10 @@ class ConsoleApp(ctk.CTk):
                 self.log_async(f"停止 PID {pid} 失败：{result.why() or result.text.strip()[:200]}")
         for _ in range(20):
             time.sleep(0.3)
-            if not port_open():
+            if not self._port_open():
                 break
-        if port_open():
-            left, err = dsh_pids()
+        if self._port_open():
+            left, err = self._pids_provider()
             if left is None:
                 self.log_async(f"警告：{PORT} 仍在监听，且剩余进程查不到（{err}）。")
             else:
@@ -516,8 +647,23 @@ class ConsoleApp(ctk.CTk):
             pass
 
 
+def _quiet_status() -> "status.Status":
+    """自检用的状态替身：不探测本机、不受真实 DSH 影响，CI 里也不会拖慢。"""
+    return status.Status(phase=status.Phase.STOPPED, pids=[], port_open=False,
+                         phone_open=False, ts_ip=None, lan_ips=None, notes=[])
+
+
+def _degraded_status(pid: int = 4321) -> "status.Status":
+    """自检用：假装端口被另一处安装占着，用来验证采纳按钮的露出与收起。"""
+    return status.Status(
+        phase=status.Phase.DEGRADED, pids=[], port_open=True, phone_open=False,
+        ts_ip=None, lan_ips=None, notes=[],
+        others=[(pid, "C:\\自检\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js")])
+
+
 def selftest() -> int:
     app = ConsoleApp()
+    app._status_provider = _quiet_status      # 自检不依赖本机真实端口与进程
     # 先让启动时的自动刷新（150ms 后）跑完，再验证二维码显示/清除
     time.sleep(0.6)
     app.update()
@@ -527,49 +673,73 @@ def selftest() -> int:
     app.clear_qr()
     app.update()
     ok_clear = app._qr_photo is None
+    # 采纳按钮：异常（端口被占用）且有候选时露出，状态恢复正常后收起
+    app._apply_status(_degraded_status())
+    app.update()
+    ok_adopt_shown = bool(app._candidates) and app._adopt_shown
+    app._apply_status(_quiet_status())
+    app.update()
+    ok_adopt_hidden = not app._candidates and not app._adopt_shown
     app.after(200, app.destroy)
     app.mainloop()
+    ok = ok_qr and ok_clear and ok_adopt_shown and ok_adopt_hidden
     marker = Path(os.environ.get("TEMP", ".")) / "dsh-gui-selftest.txt"
-    marker.write_text(f"OK {time.strftime('%Y-%m-%d %H:%M:%S')} qr={ok_qr} clear={ok_clear}\n", encoding="utf-8")
+    marker.write_text(
+        f"OK {time.strftime('%Y-%m-%d %H:%M:%S')} qr={ok_qr} clear={ok_clear} "
+        f"adopt_shown={ok_adopt_shown} adopt_hidden={ok_adopt_hidden}\n", encoding="utf-8")
     if sys.stdout:
-        print("SELFTEST OK")
-    return 0
+        print(f"SELFTEST {'OK' if ok else 'FAILED'}")
+    return 0 if ok else 1
 
 
 def stop_selftest() -> int:
-    """模拟完整点击路径：伪造 node 进程 → 跳过确认框 → on_stop → 验证被杀。"""
-    import tkinter
+    """模拟完整点击路径：伪造 node 进程 → 跳过确认框 → on_stop → 验证被杀。
+
+    替身走实例上的 _pids_provider / _status_provider（探测层本来就可注入），
+    不再改写模块全局，也绝不碰真实的 DSH 进程。
+    """
     node = shutil.which("node.exe") or r"D:\Program Files\nodejs\node.exe"
     fake = subprocess.Popen(
         [node, "-e", "setTimeout(()=>{},60000)", "bin.js", "web"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=CREATE_NO_WINDOW)
     lines: list[str] = [f"fake_pid={fake.pid}"]
+    alive, stopped, busy_left = True, False, True
     try:
         time.sleep(1.2)
-        lines.append(f"detected={dsh_pids()}")
-        real_dsh_pids = dsh_pids
-        # 只杀伪造进程，绝不碰真实的 DSH 进程
-        globals()["dsh_pids"] = lambda: ([fake.pid], None)
-        tkinter.messagebox.askyesno = lambda *a, **k: True  # type: ignore[assignment]
+        lines.append(f"detected={dsh_pids()}")     # 真探测层：伪造进程不该被认成本机 DSH
         app = ConsoleApp()
         app.withdraw()
-        app.on_stop()
-        stopped = False
-        for _ in range(40):  # 最多 8 秒：先把 after 回调跑完，再判定
-            app.update()
-            time.sleep(0.2)
-            if "已停止" in app.log.get("1.0", "end"):
-                stopped = True
-                break
-            if fake.poll() is not None and not stopped:
-                continue  # 进程已死但日志回调还没跑，继续 update
+        app._status_provider = _quiet_status
+        # 只杀伪造进程：探测口返回它，进程一死就返回空
+        app._pids_provider = lambda: ([] if fake.poll() is not None else [fake.pid], None)
+        app._port_open = lambda: False            # 端口探测也注入，自检不受本机真实 3080 影响
+        app._ask_main = lambda fn, *args: True     # 确认框一律「是」，自检不阻塞
+        captured = {"log": "", "busy": True}
+        deadline = time.monotonic() + 12
+
+        def finish() -> None:
+            captured["log"] = app.log.get("1.0", "end")
+            captured["busy"] = app._busy
+            app.destroy()
+
+        def poll() -> None:
+            # 真实事件循环在跑，工作线程投递回来的日志与状态都在这里被消费
+            if "已停止" in app.log.get("1.0", "end") or time.monotonic() > deadline:
+                app.after(300, finish)
+            else:
+                app.after(200, poll)
+
+        app.after(0, app.on_stop)
+        app.after(400, poll)
+        app.mainloop()          # 必须进 mainloop：否则 after() 从工作线程投递会被 Tk 拒绝
         alive = fake.poll() is None
+        stopped = "已停止" in captured["log"]
+        busy_left = captured["busy"]
         lines.append(f"fake_alive_after_click={alive}")
         lines.append(f"log_has_stopped={stopped}")
-        lines.append(f"log_snippet={app.log.get('1.0', 'end')[:400]!r}")
-        app.destroy()
-        globals()["dsh_pids"] = real_dsh_pids
+        lines.append(f"busy_released={not busy_left}")
+        lines.append(f"log_snippet={captured['log'][:400]!r}")
         if alive:
             fake.kill()
     finally:
@@ -577,9 +747,10 @@ def stop_selftest() -> int:
             fake.kill()
     marker = Path(os.environ.get("TEMP", ".")) / "dsh-stop-selftest.txt"
     marker.write_text("OK\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    ok = (not alive) and stopped and not busy_left
     if sys.stdout:
-        print("STOP SELFTEST DONE")
-    return 0
+        print(f"STOP SELFTEST {'OK' if ok else 'FAILED'}")
+    return 0 if ok else 1
 
 
 def ensure_ready() -> bool:
@@ -648,18 +819,34 @@ def main() -> int:
         return selftest()
     if "--stop-selftest" in sys.argv:
         return stop_selftest()
-    global CFG, HARNESS, TOKEN_LOG, PORT
+    global CFG, HARNESS, TOKEN_LOG, PORT, _APP
     try:
         want_harness, want_port = config.parse_cli(sys.argv[1:])
     except config.CliError as exc:
         _cli_error(str(exc))
         return 2
+    # 单实例：双击第二次时把已有窗口拉到前台，绝不弹第二个主窗口。
+    # 放在探测与首次运行询问之前 —— 第二个实例不该再问一遍「DSH 装在哪」。
+    guard = single.acquire()
+    if guard.blocked:
+        if single.focus_window(APP_TITLE):
+            # 已经把它拉到眼前了，再弹一个「你在重复打开」的对话框只是多要一次点击。
+            print("已经有一个 DSH 控制台在运行，已把它切到前台；这个窗口不再打开。")
+        else:
+            _info_blocking(APP_TITLE,
+                           "已经有一个 DSH 控制台在运行（没能把它切到前台，请从任务栏打开）。"
+                           "\n这个窗口不再打开。")
+        return 0
     if want_harness is not None or want_port is not None:
         CFG = config.resolve(explicit_harness=want_harness, explicit_port=want_port)
         HARNESS, TOKEN_LOG, PORT = CFG.harness, CFG.token_log, CFG.port
     if not ensure_ready():
         return 1
     app = ConsoleApp()
+    _APP = app
+    errors.install(_report)      # sys / threading 两处钩子；Tk 回调那处由 app 自己挂
+    if guard.acquired is None:
+        app.logline(f"单实例检查已跳过：{guard.reason}")
     app.mainloop()
     return 0
 

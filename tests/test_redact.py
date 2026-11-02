@@ -103,8 +103,8 @@ class GuiLogTests(unittest.TestCase):
         asked, killed = [], []
         app._ask_main = lambda fn, *args: asked.append(args)
         app._stop = lambda pids: killed.append(pids)
-        with mock.patch.object(self.gui, "dsh_pids", lambda: (None, "超时：30 秒内没有返回")):
-            self.app_cls._stop_prepare(app)
+        app._pids_provider = lambda: (None, "超时：30 秒内没有返回")   # 实例级注入，不改模块全局
+        self.app_cls._stop_prepare(app)
         self.assertEqual(killed, [])
         self.assertTrue(asked)
 
@@ -113,8 +113,8 @@ class GuiLogTests(unittest.TestCase):
         asked, killed = [], []
         app._ask_main = lambda fn, *args: (asked.append(args), False)[1]
         app._stop = lambda pids: killed.append(pids)
-        with mock.patch.object(self.gui, "dsh_pids", lambda: ([111, 222], None)):
-            self.app_cls._stop_prepare(app)
+        app._pids_provider = lambda: ([111, 222], None)
+        self.app_cls._stop_prepare(app)
         self.assertEqual(killed, [])
         self.assertIn("PID 111", asked[0][1])
         self.assertIn("PID 222", asked[0][1])
@@ -124,8 +124,8 @@ class GuiLogTests(unittest.TestCase):
         killed = []
         app._ask_main = lambda fn, *args: True
         app._stop = lambda pids: killed.append(pids)
-        with mock.patch.object(self.gui, "dsh_pids", lambda: ([111], None)):
-            self.app_cls._stop_prepare(app)
+        app._pids_provider = lambda: ([111], None)
+        self.app_cls._stop_prepare(app)
         self.assertEqual(killed, [[111]])
 
 
