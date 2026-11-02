@@ -24,7 +24,7 @@ jobs:
           dshconsole/logtail.py dshconsole/probe.py dshconsole/psrun.py
           dshconsole/resources.py dshconsole/single.py dshconsole/snapshot.py
           dshconsole/status.py dshconsole/tasks.py dshconsole/textutil.py
-          dshconsole/tray.py
+          dshconsole/tray.py dshconsole/ui_theme.py dshconsole/widgets.py
       - name: Dependency import check
         run: python -c "import tkinter, customtkinter, PIL, qrcode, pystray; print('deps ok')"
       # GUI 用例与两个自检都要真的窗口，所以放在依赖装好之后；自检不碰本机真实的

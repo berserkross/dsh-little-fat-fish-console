@@ -45,6 +45,7 @@ class FakeApp:
         self.lbl_phone = Widget()
         self.lbl_net = Widget()
         self.btn_adopt = Widget()
+        self.lbl_close_hint = Widget()
         self._queue = tasks.TaskQueue()                      # 真队列：on_change 同步执行
         self._snapshot = snapshot.Snapshot(lambda: None, ttl=60)
 
@@ -72,6 +73,18 @@ class FakeApp:
 
     def _sync_adopt_button(self):
         dsh_gui.ConsoleApp._sync_adopt_button(self)
+
+    def _sync_primary(self, phase):
+        dsh_gui.ConsoleApp._sync_primary(self, phase)
+
+    def _sync_close_hint(self):
+        dsh_gui.ConsoleApp._sync_close_hint(self)
+
+    def _on_tray_lost(self, reason):
+        dsh_gui.ConsoleApp._on_tray_lost(self, reason)
+
+    def _tray_items(self):
+        return dsh_gui.ConsoleApp._tray_items(self)
 
     def _pick_candidate(self, cands):
         return dsh_gui.ConsoleApp._pick_candidate(self, cands)
@@ -263,6 +276,41 @@ class TestabilityTests(unittest.TestCase):
         source = Path(dsh_gui.__file__).read_text(encoding="utf-8")
         self.assertIn("self._pids_provider", source)
         self.assertIn("self._status_provider", source)
+
+
+class TrayFallbackTests(unittest.TestCase):
+    """托盘起不来或托盘线程没了：退回普通窗口，不许抛 AttributeError（页脚提示要同步）。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def _fake_tray(self, ok, why):
+        return SimpleNamespace(start=lambda items: (ok, why), running=False,
+                               stop=lambda: None)
+
+    def test_start_failure_falls_back_to_plain_window(self):
+        app = FakeApp()
+        app._close_to_tray = True
+        app._tray = None
+        app._window_label = "显示窗口"
+        for attr in ("_toggle_window", "_tray_copy", "on_stop", "_quit"):
+            setattr(app, attr, lambda: None)      # 托盘菜单项只是被列出来，不会被调用
+        with mock.patch.object(dsh_gui.tray, "Tray", lambda **_kw: self._fake_tray(False, "没有可用的托盘库")):
+            self.assertFalse(self.app_cls._start_tray(app))
+        self.assertIsNone(app._tray)
+        self.assertFalse(app._close_to_tray)
+        self.assertEqual(app.lbl_close_hint.kw["text"], "关闭按钮：退出程序")
+        self.assertTrue(any("按普通窗口运行" in line for line in app.logged))
+
+    def test_tray_lost_resets_close_hint(self):
+        app = FakeApp()
+        app._close_to_tray = True
+        app._tray = SimpleNamespace(running=True, stop=lambda: None)
+        app._window_label = "显示窗口"
+        self.app_cls._on_tray_lost(app, "托盘线程退出")
+        self.assertIsNone(app._tray)
+        self.assertFalse(app._close_to_tray)
+        self.assertEqual(app.lbl_close_hint.kw["text"], "关闭按钮：退出程序")
+        self.assertTrue(any("退回普通窗口" in line for line in app.logged))
 
 
 if __name__ == "__main__":

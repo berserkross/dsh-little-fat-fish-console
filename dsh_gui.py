@@ -8,6 +8,7 @@ UI 以 DeepSeek 品牌蓝 #4D6BFE 为主基调，深色科技风，头部展示 
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 import shutil
@@ -22,7 +23,14 @@ import customtkinter as ctk
 from PIL import Image
 
 from dshconsole import (addresses, adopt, config, diagnostics, errors, logtail, probe,
-                        psrun, resources, single, snapshot, status, tasks, textutil, tray)
+                        psrun, resources, single, snapshot, status, tasks, textutil, tray,
+                        ui_theme, widgets)
+from dshconsole.ui_theme import (AMBER, AMBER_DARK, BG, BORDER, CARD, CARD2, CYAN, DIM, PHASE_WORD,
+                                 DRAWER_WIDTH, FAINT, FONT, GREEN, GREEN_DARK, GREY,
+                                 GREY_DARK, LOG_LINE_PX, LOG_ROWS_COLLAPSED, MONO,
+                                 PHASE_STYLE, PRIMARY, PRIMARY_HOVER, RED, RED_DARK,
+                                 RING_SIZE, SLATE, SLATE_DARK, TEAL, TEAL_DARK, TEXT,
+                                 VIOLET, VIOLET_DARK, WHITE_PANEL)
 
 CFG = config.resolve()          # 本机探测结果；缺项为 None，探测失败不抛异常
 HARNESS = CFG.harness
@@ -39,39 +47,23 @@ LOG_POLL_INTERVAL = 0.4            # 跟随真实日志的轮询间隔（秒，�
 STATUS_TTL = 3.0                   # 状态缓存：连点刷新不重复扫描，手动刷新穿透
 
 # ---------------- 主题（DeepSeek 蓝） ----------------
-PRIMARY = "#4D6BFE"        # DeepSeek 品牌蓝
-PRIMARY_HOVER = "#3A55E0"
-CYAN = "#35D5F4"
-GREEN = "#2BB673"
-GREEN_DARK = "#1E8F5B"
-RED = "#F0526B"
-RED_DARK = "#C93A52"
-VIOLET = "#8B5CF6"
-VIOLET_DARK = "#6F43D8"
-TEAL = "#14B8A6"
-TEAL_DARK = "#0D9488"
-SLATE = "#44527A"
-SLATE_DARK = "#34405E"
-BG = "#070C1A"             # 窗口底色
-CARD = "#0E1830"           # 卡片
-CARD2 = "#152242"          # 次级卡片
-BORDER = "#1D2B4F"
-TEXT = "#E6EDF8"
-DIM = "#8A97B8"
-FAINT = "#5C6B8E"
-WHITE_PANEL = "#FFFFFF"
+# 配色 / 尺寸 / 五态样式集中在 dshconsole/ui_theme.py，上面 import 已带进本模块作用域。
+# 未运行是中性灰而不是红：正常停机不是报警，红环会把「待机」渲染成「出事」。
 
-FONT = "Microsoft YaHei UI"
-MONO = "Consolas"
 
-# 阶段 -> (颜色, 圆点)。UNKNOWN 用灰而不是红：查不到不等于未运行。
-_PHASE_STYLE = {
-    status.Phase.RUNNING: (GREEN, "●"),
-    status.Phase.STARTING: (CYAN, "◔"),
-    status.Phase.DEGRADED: (VIOLET, "◐"),
-    status.Phase.STOPPED: (RED, "○"),
-    status.Phase.UNKNOWN: (FAINT, "？"),
-}
+def primary_action(phase) -> tuple[str, str, str, str]:
+    """五态各自的主操作 -> (按钮文案, 回调名, 颜色, 悬停色)。
+
+    一屏只留这一颗主按钮：十颗按钮并排时，用户得自己判断哪颗现在能用。
+    回调名与原有的 on_start / on_stop 同名，所以点下去的业务与改动前完全一致。
+    """
+    if phase is status.Phase.STOPPED:
+        return "启动 DSH", "start", PRIMARY, PRIMARY_HOVER
+    if phase is status.Phase.DEGRADED:
+        return "修复/重启", "restart", AMBER, AMBER_DARK
+    if phase is status.Phase.UNKNOWN:
+        return "重新探测", "refresh", SLATE, SLATE_DARK
+    return "停止 DSH", "stop", RED, RED_DARK      # 启动中 / 运行中
 
 
 def _font(size: int, bold: bool = False) -> ctk.CTkFont:
@@ -201,10 +193,16 @@ class ConsoleApp(ctk.CTk):
         super().__init__()
         self.title(APP_TITLE)
         self._set_icon()
-        self.geometry("720x880")
-        self.minsize(660, 780)
+        self.geometry("660x800")
+        self.minsize(620, 720)
         self.configure(fg_color=BG)
         self._qr_photo = None
+        self._qr_overlay: widgets.QrOverlay | None = None
+        self._log_overlay: widgets.LogOverlay | None = None
+        self._drawer: widgets.DrawerMenu | None = None
+        self._log_rows = LOG_ROWS_COLLAPSED      # 日志区露几行（要更多走浮层）
+        self._log_follow = True                  # 日志跟随开关，从「⋯」里切
+        self._primary_name = "start"             # 主按钮当前绑的回调名
         self._token: str | None = None
         self._candidates: list[adopt.Candidate] = []   # 端口被占用时查到的别的 DSH 进程
         self._adopt_shown = False
@@ -239,6 +237,7 @@ class ConsoleApp(ctk.CTk):
 
     def _start_log_tail(self) -> None:
         """跟随真实日志文件（dsh-web.stdout.log / .stderr.log）。"""
+        self._log_follow = True
         try:
             self._tail = logtail.LogTailer(CFG.log_files, self._on_tail_lines,
                                            interval=LOG_POLL_INTERVAL)
@@ -262,7 +261,7 @@ class ConsoleApp(ctk.CTk):
             return True
         self._tray = None
         self._close_to_tray = False     # 起不来就退回普通窗口，别把用户锁在托盘里
-        self._sync_close_switch()
+        self._sync_close_hint()
         self.logline(f"{why}：本次按普通窗口运行，关闭按钮＝退出。")
         return False
 
@@ -271,7 +270,7 @@ class ConsoleApp(ctk.CTk):
         self.logline(f"{reason}：退回普通窗口，关闭按钮＝退出。")
         self._tray = None
         self._close_to_tray = False
-        self._sync_close_switch()
+        self._sync_close_hint()
 
     def _tray_items(self):
         return [
@@ -336,19 +335,17 @@ class ConsoleApp(ctk.CTk):
         except Exception:      # noqa: BLE001 - 窗口已销毁
             pass
 
-    def _sync_close_switch(self) -> None:
-        """把开关拨到当前真实行为上（不起托盘时不该显示成「收进托盘」）。"""
+    def _sync_close_hint(self) -> None:
+        """页脚只留一行当前行为（开关本体搬进「⋯」抽屉，底栏不再挤两个控件）。"""
+        text = "关闭按钮：收进托盘" if self._close_to_tray else "关闭按钮：退出程序"
         try:
-            if self._close_to_tray:
-                self.sw_tray.select()
-            else:
-                self.sw_tray.deselect()
-        except Exception:      # noqa: BLE001
+            self.lbl_close_hint.configure(text=text)
+        except Exception:      # noqa: BLE001 - 控件替身/未建好
             pass
 
-    def _on_close_mode_change(self) -> None:
+    def on_toggle_close_mode(self) -> None:
         """一键在「关闭收进托盘」与「关闭即退出」之间切换，并写回 config.json。"""
-        want = bool(self.sw_tray.get())
+        want = not self._close_to_tray
         self._close_to_tray = want
         try:
             config.set_close_to_tray(want)
@@ -363,12 +360,25 @@ class ConsoleApp(ctk.CTk):
                 self._tray.stop()
                 self._tray = None
             self.logline("关闭按钮＝退出程序。")
-        self._sync_close_switch()
+        self._sync_close_hint()
+
+    def _close_overlays(self) -> None:
+        """收起抽屉与浮层，并释放二维码的内存引用（不产生任何文件）。"""
+        for attr in ("_qr_overlay", "_log_overlay", "_drawer"):
+            layer = getattr(self, attr, None)
+            if layer is None:
+                continue
+            try:
+                layer.close()
+            except Exception:      # noqa: BLE001 - 已经在销毁路径上
+                pass
+            setattr(self, attr, None)
+        self.clear_qr()
 
     def _on_close(self) -> None:
         """关闭按钮：收进托盘（可一键改回退出），绝不悄悄退掉。"""
         if self._close_to_tray and self._tray is not None:
-            self.clear_qr()
+            self._close_overlays()
             try:
                 self.withdraw()
             except Exception:      # noqa: BLE001
@@ -381,7 +391,7 @@ class ConsoleApp(ctk.CTk):
 
     def _quit(self) -> None:
         """真退出：先停后台线程（日志跟随、托盘），再销毁窗口。"""
-        self.clear_qr()
+        self._close_overlays()
         tail, self._tail = self._tail, None
         if tail is not None:
             tail.stop()
@@ -405,7 +415,8 @@ class ConsoleApp(ctk.CTk):
 
     # ---------------- UI ----------------
     def _build(self) -> None:
-        # --- 头部：鲸鱼娘 + 标题 ---
+        """大环 + 抽屉：一颗状态环、一颗主按钮、其余操作收进「⋯」，日志只露末尾 15 行。"""
+        # --- 头部：鲸鱼娘 + 标题 +「⋯」 ---
         head = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
                             border_width=1, border_color=BORDER)
         head.pack(fill="x", padx=14, pady=(14, 8))
@@ -418,20 +429,36 @@ class ConsoleApp(ctk.CTk):
                      text_color=TEXT, anchor="w").pack(anchor="w")
         ctk.CTkLabel(title_box, text="本地入口 · 手机访问管理", font=_font(11),
                      text_color=DIM, anchor="w").pack(anchor="w")
+        # 抽屉入口：应用内菜单。托盘右键菜单是 Host 语义，两者互不复用。
+        self.btn_menu = ctk.CTkButton(head, text="⋯", width=40, height=34, corner_radius=10,
+                                      fg_color=CARD2, hover_color="#1D2D55", text_color=TEXT,
+                                      font=_font(18, True), cursor="hand2",
+                                      command=self._open_drawer)
+        self.btn_menu.pack(side="right", padx=(8, 16))
 
-        # --- 状态卡片 ---
+        # --- 状态卡片：状态环 + 右侧文字 ---
         card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
                             border_width=1, border_color=BORDER)
         card.pack(fill="x", padx=14, pady=6)
-        self.lbl_service = ctk.CTkLabel(card, text="服务状态：--", font=_font(12, True),
-                                        text_color=FAINT, anchor="w")
-        self.lbl_service.pack(fill="x", padx=14, pady=(12, 4))
-        self.lbl_phone = ctk.CTkLabel(card, text="手机访问：--", font=_font(12, True),
-                                      text_color=FAINT, anchor="w")
-        self.lbl_phone.pack(fill="x", padx=14, pady=4)
-        self.lbl_net = ctk.CTkLabel(card, text="网络：--", font=_font(11),
-                                    text_color=DIM, anchor="w", justify="left")
-        self.lbl_net.pack(fill="x", padx=14, pady=(4, 12))
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=(12, 6))
+        self.ring = widgets.StatusRing(row, bg=CARD)
+        self.ring.pack(side="left")
+        side = ctk.CTkFrame(row, fg_color="transparent")
+        side.pack(side="left", fill="both", expand=True, padx=(16, 0))
+        wrap = 330
+        self.lbl_service = ctk.CTkLabel(side, text="服务状态：--", font=_font(12, True),
+                                        text_color=FAINT, anchor="w", justify="left",
+                                        wraplength=wrap)
+        self.lbl_service.pack(fill="x")
+        self.lbl_phone = ctk.CTkLabel(side, text="手机访问：--", font=_font(12, True),
+                                      text_color=FAINT, anchor="w", justify="left",
+                                      wraplength=wrap)
+        self.lbl_phone.pack(fill="x", pady=(6, 0))
+        self.lbl_net = ctk.CTkLabel(side, text="网络：--", font=_font(11),
+                                    text_color=DIM, anchor="w", justify="left",
+                                    wraplength=wrap)
+        self.lbl_net.pack(fill="x", pady=(6, 0))
         # 采纳按钮：只有「异常（端口被占用）且查到占用者」时才 pack 出来（见 _sync_adopt_button）
         self.btn_adopt = ctk.CTkButton(
             card, text="改为控制运行中的实例", command=self.on_adopt,
@@ -442,75 +469,57 @@ class ConsoleApp(ctk.CTk):
                                       anchor="w", justify="left")
         self.lbl_queue.pack(fill="x", padx=14, pady=(0, 10))
 
-        # --- 按钮区 ---
-        grid = ctk.CTkFrame(self, fg_color="transparent")
-        grid.pack(fill="x", padx=14, pady=6)
-        for col in range(2):
-            grid.columnconfigure(col, weight=1)
-        buttons = [
-            ("▶  启动 DeepSeek Harness", self.on_start, PRIMARY, PRIMARY_HOVER),
-            ("⏹  停止 DeepSeek Harness", self.on_stop, RED, RED_DARK),
-            ("📱  开启手机访问（需 UAC）", self.on_phone_on, GREEN, GREEN_DARK),
-            ("🏠  恢复本机模式（需 UAC）", self.on_phone_off, SLATE, SLATE_DARK),
-            ("📋  复制手机地址", self.on_copy, VIOLET, VIOLET_DARK),
-            ("🔳  Tailscale 二维码", self.on_qr_ts, TEAL, TEAL_DARK),
-            ("🔳  局域网 二维码", self.on_qr_lan, TEAL, TEAL_DARK),
-            ("🔄  刷新状态", self.on_refresh, SLATE, SLATE_DARK),
-            ("🩺  导出诊断包", self.on_export_diag, SLATE, SLATE_DARK),
-            ("✖  取消排队", self.on_cancel_queue, SLATE, SLATE_DARK),
-        ]
-        for i, (text, cmd, color, hover) in enumerate(buttons):
-            btn = ctk.CTkButton(grid, text=text, command=cmd, fg_color=color,
-                                hover_color=hover, text_color="#FFFFFF",
-                                font=_font(12, True), height=42, corner_radius=10,
-                                cursor="hand2")
-            btn.grid(row=i // 2, column=i % 2, sticky="nsew", padx=4, pady=4)
+        # --- 主按钮：只有一颗，文案与颜色随状态换 ---
+        self.btn_primary = ctk.CTkButton(self, text="启动 DSH", command=self._run_primary,
+                                         height=52, corner_radius=12, font=_font(15, True),
+                                         fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
+                                         text_color="#FFFFFF", cursor="hand2")
+        self.btn_primary.pack(fill="x", padx=14, pady=(8, 4))
 
-        # --- 二维码卡片 ---
-        qr_card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
-                               border_width=1, border_color=BORDER)
-        qr_card.pack(fill="x", padx=14, pady=6)
-        ctk.CTkLabel(qr_card, text="手机地址二维码", font=_font(12, True),
-                     text_color=TEXT, anchor="w").pack(fill="x", padx=14, pady=(10, 4))
-        self.qr_label = ctk.CTkLabel(
-            qr_card, text="点「二维码」按钮生成，直接显示在这里；\n刷新状态或关闭窗口后自动清除",
-            font=_font(11), text_color=FAINT, width=252, height=252,
-            fg_color=WHITE_PANEL, corner_radius=10)
-        self.qr_label.pack(pady=(2, 12))
-
-        # --- 日志卡片 ---
+        # --- 日志卡片：默认只露末尾 15 行，要更多点「展开全屏」 ---
         log_card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
                                 border_width=1, border_color=BORDER)
-        log_card.pack(fill="both", expand=True, padx=14, pady=6)
-        ctk.CTkLabel(log_card, text="运行日志", font=_font(12, True),
-                     text_color=TEXT, anchor="w").pack(fill="x", padx=14, pady=(10, 4))
-        self.log = ctk.CTkTextbox(log_card, height=150, fg_color="#0A1226",
-                                  text_color="#C7D3EA", font=_mono(12),
+        log_card.pack(fill="x", padx=14, pady=6)
+        log_head = ctk.CTkFrame(log_card, fg_color="transparent")
+        log_head.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkLabel(log_head, text="运行日志", font=_font(12, True),
+                     text_color=TEXT, anchor="w").pack(side="left")
+        ctk.CTkButton(log_head, text="展开全屏", width=84, height=26, corner_radius=8,
+                      fg_color=CARD2, hover_color="#1D2D55", text_color=TEXT,
+                      font=_font(11), cursor="hand2",
+                      command=self.on_expand_log).pack(side="right")
+        self.lbl_log_hint = ctk.CTkLabel(log_head, text=f"仅显示末尾 {self._log_rows} 行",
+                                         font=_font(11), text_color=FAINT, anchor="e")
+        self.lbl_log_hint.pack(side="right", padx=(0, 10))
+        self.log = ctk.CTkTextbox(log_card, height=self._log_rows * LOG_LINE_PX,
+                                  fg_color="#0A1226", text_color="#C7D3EA", font=_mono(12),
                                   corner_radius=10, border_width=1, border_color=BORDER,
                                   wrap="word", state="disabled")
-        self.log.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.log.pack(fill="x", padx=12, pady=(0, 12))
+
+        # 空白留给窗口拉伸：日志区该保持 15 行，不该跟着窗口一起长。
+        ctk.CTkFrame(self, fg_color="transparent").pack(fill="both", expand=True)
 
         # --- 底栏 ---
         foot = ctk.CTkFrame(self, fg_color="transparent")
         foot.pack(fill="x", padx=14, pady=(0, 12))
         ctk.CTkLabel(foot, text=f"本机：http://127.0.0.1:{PORT}", font=_font(11),
                      text_color=DIM, anchor="w").pack(side="left")
-        # 关闭行为一键切换：把用户锁死在托盘里是不可接受的
-        self.sw_tray = ctk.CTkSwitch(foot, text="关闭窗口时收进托盘",
-                                     command=self._on_close_mode_change,
-                                     font=_font(11), text_color=DIM,
-                                     progress_color=PRIMARY, width=150)
-        self.sw_tray.pack(side="right", padx=(8, 0))
+        # 关闭行为只显示一行字，切换开关在「⋯」里（把用户锁死在托盘里不可接受）
+        self.lbl_close_hint = ctk.CTkLabel(foot, text="", font=_font(11),
+                                           text_color=DIM, anchor="e")
+        self.lbl_close_hint.pack(side="right", padx=(8, 0))
         ctk.CTkButton(foot, text="复制本机地址", command=self.on_copy_local, width=110,
                       height=28, corner_radius=8, fg_color=CARD2, hover_color="#1D2D55",
                       text_color=TEXT, font=_font(11), cursor="hand2").pack(side="right")
-        self._sync_close_switch()
+        self._sync_close_hint()
 
     # ---------------- helpers ----------------
     def logline(self, msg: str) -> None:
         self.log.configure(state="normal")
         self.log.insert("end", time.strftime("[%H:%M:%S] ") + msg + "\n")
         self._scroll_log_to_end()
+        self._mirror_log()
         self.log.configure(state="disabled")
 
     def log_async(self, msg: str) -> None:
@@ -532,6 +541,7 @@ class ConsoleApp(ctk.CTk):
                 self.log.insert("end", prefix + line + "\n")
             self._trim_log(limit)
             self._scroll_log_to_end()
+            self._mirror_log()
             self.log.configure(state="disabled")
         except Exception:  # noqa: BLE001 - 窗口已销毁：没人看日志了
             pass
@@ -557,6 +567,17 @@ class ConsoleApp(ctk.CTk):
         try:
             self.log.delete("1.0", f"{total - limit + 1}.0")
         except Exception:  # noqa: BLE001
+            pass
+
+    def _mirror_log(self) -> None:
+        """把主日志框的内容搬到全屏窗：内容早就在主框里打码并截断过，这里只搬运。"""
+        overlay = self._log_overlay
+        if overlay is None:
+            return
+        try:
+            overlay.fill(self.log.get("1.0", "end-1c"))
+            overlay.follow()
+        except Exception:      # noqa: BLE001 - 浮层已关
             pass
 
     # ---------------- 串行队列（替代原来的全局 _busy） ----------------
@@ -628,10 +649,7 @@ class ConsoleApp(ctk.CTk):
         探测要 spawn PowerShell（本机约 2 秒），绝不能放在主线程上：窗口打开、
         点刷新、任务结束时的刷新都走这条路，界面一次都不该冻住。
         """
-        try:
-            self.clear_qr()   # 刷新即清除旧二维码，避免堆积/残留
-        except Exception:  # noqa: BLE001
-            pass
+        # 二维码不再随刷新清除：它住在浮层里，关掉浮层才清（否则刷一次闪一下）。
         self._show_refreshing()
 
         def work() -> None:
@@ -652,10 +670,10 @@ class ConsoleApp(ctk.CTk):
             if self._last_status is None:
                 self.lbl_service.configure(text="⟳  刷新中…", text_color=CYAN)
                 return
-            color, dot = _PHASE_STYLE[self._last_status.phase]
+            style = PHASE_STYLE[self._last_status.phase]
             self.lbl_service.configure(
-                text=f"{dot}  服务状态：{self._last_status.phase.label}　⟳ 刷新中…",
-                text_color=color)
+                text=f"{style.dot}  服务状态：{self._last_status.phase.label}　⟳ 刷新中…",
+                text_color=style.color)
         except Exception:  # noqa: BLE001 - 窗口已销毁
             pass
 
@@ -674,8 +692,13 @@ class ConsoleApp(ctk.CTk):
         「少调用」：说明文字合成一次 insert，能后台算的（token）都在后台算。
         """
         self._last_status = state
-        color, dot = _PHASE_STYLE[state.phase]
-        self.lbl_service.configure(text=f"{dot}  服务状态：{state.phase.label}", text_color=color)
+        style = PHASE_STYLE[state.phase]
+        self.lbl_service.configure(
+            text=f"{style.dot}  服务状态：{state.phase.label}", text_color=style.color)
+        self._sync_primary(state.phase)          # 主按钮的文案与颜色跟着状态走
+        ring = getattr(self, "ring", None)
+        if ring is not None:
+            ring.set_status(state.phase, state.pids)   # 环：颜色 + 状态词 + PID
         if state.phone_open is None:
             phone_text, phone_dot, phone_color = "未知（原因见日志）", "？", FAINT
         elif state.phone_open:
@@ -710,6 +733,204 @@ class ConsoleApp(ctk.CTk):
         if not self._adopt_shown:
             self.btn_adopt.pack(fill="x", padx=14, pady=(0, 12))
             self._adopt_shown = True
+
+    # ---------------- 大环 / 抽屉 / 浮层 ----------------
+    def _run_primary(self) -> None:
+        """主按钮：永远调当前状态对应的那颗老回调（不新写业务）。"""
+        handler = getattr(self, "on_" + self._primary_name, None)
+        if handler is not None:
+            handler()
+
+    def _sync_primary(self, phase) -> None:
+        """按状态换主按钮的文案与颜色；文案是主体，颜色只是辅助。"""
+        label, name, color, hover = primary_action(phase)
+        self._primary_name = name
+        button = getattr(self, "btn_primary", None)
+        if button is None:          # 控件替身 / 还没建好
+            return
+        try:
+            button.configure(text=label, fg_color=color, hover_color=hover)
+        except Exception:      # noqa: BLE001
+            pass
+
+    def _drawer_items(self) -> list:
+        """抽屉条目：其余操作都收在这里。托盘右键菜单是 Host 语义，两者不复用。"""
+        follow = "暂停日志跟随" if self._log_follow else "继续日志跟随"
+        mode = "关闭窗口时：退出程序" if self._close_to_tray else "关闭窗口时：收进托盘"
+        try:
+            pending = len(self._queue.pending())
+        except Exception:      # noqa: BLE001
+            pending = 0
+        items = [
+            ("🔄  刷新状态", self.on_refresh),
+            ("♻  重启 DSH", self.on_restart),
+            ("🔢  切换 Web 端口…", self.on_change_port),
+            ("📱  手机访问（二维码）", self.on_phone_access),
+            ("📋  复制手机访问地址", self.on_copy),
+            ("🖥  复制本机地址", self.on_copy_local),
+            ("📶  开启手机访问（需 UAC）", self.on_phone_on),
+            ("🏠  恢复本机模式（需 UAC）", self.on_phone_off),
+            ("🩺  导出诊断包", self.on_export_diag),
+            (f"📜  {follow}", self.on_toggle_log_follow),
+            (f"📌  {mode}", self.on_toggle_close_mode),
+        ]
+        if pending:
+            items.append((f"✖  取消排队（{pending} 个）", self.on_cancel_queue))
+        items.append(("🚪  退出", self._quit))
+        return items
+
+    def _open_drawer(self) -> None:
+        """「⋯」抽屉：每次打开都重建，动态文案（跟随 / 关闭行为 / 队列）才是当下的。"""
+        if self._drawer is not None:
+            self._drawer.close()
+            self._drawer = None
+        try:
+            x = self.btn_menu.winfo_rootx() + self.btn_menu.winfo_width() - DRAWER_WIDTH
+            y = self.btn_menu.winfo_rooty() + self.btn_menu.winfo_height() + 6
+        except Exception:      # noqa: BLE001 - 控件已销毁
+            x = y = 120
+        self._drawer = widgets.DrawerMenu(self, self._drawer_items(), x=x, y=y,
+                                          on_close=self._on_drawer_closed)
+        self._drawer.show()
+        self._place_drawer()
+
+    def _place_drawer(self) -> None:
+        """把抽屉钉在「⋯」右下角：宽度要等窗口画出来才知道（高 DPI 下不等于设计值）。"""
+        menu = self._drawer
+        if menu is None:
+            return
+        try:
+            self.update_idletasks()
+            right = self.btn_menu.winfo_rootx() + self.btn_menu.winfo_width()
+            x = max(self.winfo_rootx() + 6, right - menu.winfo_width())
+            y = self.btn_menu.winfo_rooty() + self.btn_menu.winfo_height() + 6
+            menu.geometry("+%d+%d" % (int(x), int(y)))
+        except Exception:      # noqa: BLE001 - 控件已销毁
+            pass
+
+    def _on_drawer_closed(self) -> None:
+        self._drawer = None
+
+    def on_toggle_log_follow(self) -> None:
+        """日志跟随开关：关掉只是不再读新行，框里已有的内容照旧留着。"""
+        if not self._log_follow:
+            self._start_log_tail()
+            return
+        tail, self._tail = self._tail, None
+        self._log_follow = False
+        if tail is not None:
+            tail.stop()
+        self.logline("已暂停日志跟随（「⋯」里可以再打开）。")
+
+    def on_expand_log(self) -> None:
+        """全屏看日志：与主框同一份内容，关掉就回到末尾 15 行。"""
+        overlay = self._log_overlay
+        if overlay is not None:
+            overlay.show()
+            self._mirror_log()
+            return
+        self._log_overlay = widgets.LogOverlay(self, limit=MAX_LOG_LINES,
+                                               on_close=self._on_log_overlay_closed)
+        self._log_overlay.show()
+        self._mirror_log()
+
+    def _on_log_overlay_closed(self) -> None:
+        self._log_overlay = None
+
+    def on_change_port(self) -> None:
+        """切换 Web 端口：写回 config.json 并刷新（新的端口下次启动生效）。"""
+        global CFG, PORT
+        dialog = ctk.CTkInputDialog(title="切换 Web 端口",
+                                    text=f"当前端口 {PORT}，新端口（1-65535）：")
+        raw = dialog.get_input()
+        if raw is None:
+            return
+        try:
+            port = addresses.validate_port(raw)
+        except ValueError as exc:
+            messagebox.showinfo("端口不合法", str(exc))
+            return
+        try:
+            new_cfg = dataclasses.replace(CFG, port=port)
+            config.save(new_cfg)
+        except Exception as exc:      # noqa: BLE001 - 写不进去就别假装成功
+            messagebox.showinfo("没能保存", f"{exc}")
+            return
+        CFG = new_cfg
+        PORT = port
+        self._snapshot.invalidate()
+        self.logline(f"Web 端口已改为 {port}（下次启动 DSH 生效）。")
+        self.refresh(force=True)
+
+    def on_restart(self) -> None:
+        """重启 = 停止 + 启动：两条既有路径按顺序走，不新增业务分支。"""
+        self._submit("重启 DSH", self._restart)
+
+    def _restart(self) -> None:
+        pids, err = self._pids_provider()
+        if pids is None:
+            self.log_async(f"未知：node 进程查不到（{err}），重启前不结束任何进程。")
+            return
+        if not pids:
+            self.log_async("没有正在运行的 DSH，直接启动。")
+        else:
+            listing = "\n".join(f"    PID {pid}" for pid in pids)
+            if not self._ask_main(messagebox.askyesno, "重启确认",
+                                  f"将先结束以下 node 进程再重新启动：\n{listing}\n\n"
+                                  "当前网页会断开（会话已存档可重开）。继续吗？"):
+                self.log_async("已取消重启，未结束任何进程。")
+                return
+            self._stop(pids)
+        self._start()
+
+    def on_phone_access(self) -> None:
+        """手机访问浮层：地址下拉 + 二维码 + 复制；主界面不再常驻二维码。"""
+        if self._qr_overlay is not None:
+            self._qr_overlay.show()
+            return
+        if not self._current_token():
+            messagebox.showinfo("提示", "还没有可用的 token：请先启动 Harness。")
+            return
+        overlay = widgets.QrOverlay(self, on_close=self._on_qr_overlay_closed)
+        self._qr_overlay = overlay
+        self._fill_qr_addresses()
+        try:
+            overlay.picker.configure(command=self._on_qr_pick)
+            overlay.bind_actions(self.on_copy)
+        except Exception:      # noqa: BLE001 - 浮层刚建就被关
+            pass
+        overlay.show()
+
+    def _fill_qr_addresses(self) -> None:
+        """把已知地址灌进下拉，并先画第一张（一个都没有时退回本机）。"""
+        overlay = self._qr_overlay
+        if overlay is None:
+            return
+        try:
+            known, _unknown = self._address_options()
+            options = [text for text, _addr in known] or [f"本机  127.0.0.1:{PORT}"]
+            overlay.picker.configure(values=options)
+            overlay.picker.set(options[0])
+        except Exception:      # noqa: BLE001
+            options = [f"本机  127.0.0.1:{PORT}"]
+        self._on_qr_pick(options[0])
+
+    def _on_qr_pick(self, choice: str) -> None:
+        """选中哪个地址就立刻重画二维码（token 打码后才写进浮层的小字）。"""
+        token = self._current_token()
+        if not token:
+            return
+        try:
+            known, _unknown = self._address_options()
+        except Exception:      # noqa: BLE001
+            known = []
+        addr = next((item for text, item in known if text == choice), None)
+        url = addr.url(PORT) if addr is not None else f"http://127.0.0.1:{PORT}/"
+        self._qr(f"{url}?token={token_suffix(token)}", "手机访问")
+
+    def _on_qr_overlay_closed(self) -> None:
+        self._qr_overlay = None
+        self.clear_qr()
 
     # ---------------- actions ----------------
     def on_adopt(self) -> None:
@@ -1009,45 +1230,32 @@ class ConsoleApp(ctk.CTk):
         self.clipboard_append(token)             # 剪贴板放完整地址
         self.logline("本机地址已复制：" + textutil.redact(token))
 
-    def on_qr_ts(self) -> None:
-        self._qr_for({"tailscale"}, "Tailscale")
-
-    def on_qr_lan(self) -> None:
-        self._qr_for({"lan"}, "局域网")
-
-    def _qr_for(self, kinds, label: str) -> None:
-        token = self._current_token()
-        if not token:
-            messagebox.showinfo("提示", "还没有可用的 token：请先启动 Harness。")
-            return
-        chosen = self._ask_address(f"{label}二维码", kinds)
-        if chosen is None:
-            return
-        addr, port = chosen
-        self._qr(f"{addr.url(port)}?token={token_suffix(token)}", label)
-
     def _qr(self, url: str, label: str) -> None:
+        """生成二维码放进浮层：只在内存，关掉浮层即清除，不落盘。"""
         try:
             img = make_qr(url)
             ctk_img = ctk.CTkImage(light_image=img, dark_image=img,
                                    size=(img.width, img.height))
-            self._qr_photo = ctk_img  # 保持引用防 GC
-            self.qr_label.configure(image=ctk_img, text="", width=252, height=252,
-                                    fg_color=WHITE_PANEL)
-            self.logline(f"{label}二维码已显示在窗口中（仅在内存，刷新/关闭即清除）。")
+            self._qr_photo = ctk_img      # 保持引用防 GC
+            overlay = self._qr_overlay
+            if overlay is not None:
+                overlay.image_label.configure(image=ctk_img, text="")
+                overlay.hint.configure(text=f"{label} · {textutil.redact(url)}")
+            self.logline(f"{label}二维码已生成（仅在内存，关闭浮层即清除）。")
         except Exception as exc:  # noqa: BLE001
             self.logline(f"二维码生成失败：{exc}")
 
     def clear_qr(self) -> None:
-        """清除窗口内二维码（内存引用一并释放，不产生任何文件）。"""
+        """清除二维码（内存引用一并释放，不产生任何文件）。"""
         self._qr_photo = None
+        overlay = self._qr_overlay
+        if overlay is None:
+            return
         try:
-            self.qr_label.configure(image=None,
-                                    text="点「二维码」按钮生成，直接显示在这里；\n刷新状态或关闭窗口后自动清除",
-                                    width=252, height=252, fg_color=WHITE_PANEL)
-        except Exception:  # noqa: BLE001
+            overlay.image_label.configure(image=None, text="")
+            overlay.hint.configure(text="")
+        except Exception:      # noqa: BLE001 - 浮层已销毁
             pass
-
 
 def _quiet_status() -> "status.Status":
     """自检用的状态替身：不探测本机、不受真实 DSH 影响，CI 里也不会拖慢。"""
@@ -1063,26 +1271,68 @@ def _degraded_status(pid: int = 4321) -> "status.Status":
         others=[(pid, "C:\\自检\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js")])
 
 
+def _running_status(pid: int = 4321) -> "status.Status":
+    """自检用：五态里挑「运行中」验收状态环与主按钮（不碰真实进程）。"""
+    return status.Status(phase=status.Phase.RUNNING, pids=[pid], port_open=True,
+                         phone_open=True, ts_ip="100.124.206.105",
+                         lan_ips=["192.168.1.20"], notes=[])
+
+
 def selftest() -> int:
     app = ConsoleApp()
     app._status_provider = _quiet_status      # 自检不依赖本机真实端口与进程
     app._snapshot.invalidate()
-    # 先让启动时的自动刷新（150ms 后）跑完，再验证二维码显示/清除
+    # 先让启动时的自动刷新（150ms 后）跑完，再逐块验证
     time.sleep(0.6)
     app.update()
-    app._qr("http://100.124.206.105:3080/?token=selftest", "自检")
+
+    # 状态环 + 单主按钮：环里必须写着状态词（不能只靠颜色区分），按钮文案跟着变
+    app._apply_status(_running_status())
     app.update()
-    ok_qr = app._qr_photo is not None
-    app.clear_qr()
-    app.update()
-    ok_clear = app._qr_photo is None
+    try:
+        ring_text = app.ring.phase_text
+    except Exception:      # noqa: BLE001 - 拿不到就直接判失败
+        ring_text = ""
+    ok_ring = ring_text == PHASE_WORD[status.Phase.RUNNING]
+    try:
+        ok_primary = app.btn_primary.cget("text") == "停止 DSH"
+    except Exception:      # noqa: BLE001
+        ok_primary = False
+
     # 采纳按钮：异常（端口被占用）且有候选时露出，状态恢复正常后收起
     app._apply_status(_degraded_status())
     app.update()
     ok_adopt_shown = bool(app._candidates) and app._adopt_shown
+    try:
+        ok_primary_deg = app.btn_primary.cget("text") == "修复/重启"
+    except Exception:      # noqa: BLE001
+        ok_primary_deg = False
     app._apply_status(_quiet_status())
     app.update()
     ok_adopt_hidden = not app._candidates and not app._adopt_shown
+
+    # 二维码改住浮层：主界面不常驻，弹层关掉就清干净
+    app._token = "selftest-token"    # 必须在最后一次 _apply_status 之后（否则被真 token 覆盖）
+    app.on_phone_access()
+    app.update()
+    ok_qr = app._qr_photo is not None
+    ok_overlay_open = app._qr_overlay is not None
+    app._close_overlays()
+    app.update()
+    ok_overlay_closed = app._qr_overlay is None and app._log_overlay is None
+    ok_clear = app._qr_photo is None
+
+    # 「⋯」抽屉：其余操作都在里面
+    app._open_drawer()
+    app.update()
+    try:
+        menu_items = len(app._drawer.labels())
+    except Exception:      # noqa: BLE001
+        menu_items = -1
+    app._close_overlays()
+    app.update()
+    ok_menu = menu_items >= 11
+
     # 日志滚动上限：塞 2100 行后行数必须回到上限以内（C2）
     app._append_log([f"自检第 {i} 行" for i in range(MAX_LOG_LINES + 100)])
     app.update()
@@ -1091,19 +1341,38 @@ def selftest() -> int:
     except Exception:      # noqa: BLE001 - 取不到就直接判失败
         log_lines = -1
     ok_trim = 0 < log_lines <= MAX_LOG_LINES
+
+    # 日志默认只显示末尾 N 行，展开全屏就是同一份内容
+    ok_collapsed = app._log_rows == LOG_ROWS_COLLAPSED
+    app.on_expand_log()
+    app.update()
+    try:
+        log_expanded = app._log_overlay is not None and app._log_overlay.line_count > 0
+    except Exception:      # noqa: BLE001
+        log_expanded = False
+    log_collapsed = app._log_rows
+    app._close_overlays()
+    app.update()
+
     # 地址下拉：本机那一项永远在（C4 不该给出空列表）
     try:
         ok_addr = bool(app._address_options()[0])
     except Exception:      # noqa: BLE001
         ok_addr = False
+
     app.after(200, app.destroy)
     app.mainloop()
-    ok = ok_qr and ok_clear and ok_adopt_shown and ok_adopt_hidden and ok_trim and ok_addr
+    ok = all([ok_qr, ok_clear, ok_adopt_shown, ok_adopt_hidden, ok_trim, ok_addr,
+              ok_ring, ok_primary, ok_primary_deg, ok_menu, ok_overlay_open,
+              ok_overlay_closed, ok_collapsed, log_expanded])
     marker = Path(os.environ.get("TEMP", ".")) / "dsh-gui-selftest.txt"
     marker.write_text(
         f"OK {time.strftime('%Y-%m-%d %H:%M:%S')} qr={ok_qr} clear={ok_clear} "
         f"adopt_shown={ok_adopt_shown} adopt_hidden={ok_adopt_hidden} "
-        f"log_lines={log_lines} trim={ok_trim} addresses={ok_addr}\n", encoding="utf-8")
+        f"log_lines={log_lines} trim={ok_trim} addresses={ok_addr} "
+        f"ring={ring_text or '无'} menu_items={menu_items} "
+        f"overlay_open={ok_overlay_open} overlay_closed={ok_overlay_closed} "
+        f"log_collapsed={log_collapsed} log_expanded={log_expanded}\n", encoding="utf-8")
     if sys.stdout:
         print(f"SELFTEST {'OK' if ok else 'FAILED'}")
     return 0 if ok else 1

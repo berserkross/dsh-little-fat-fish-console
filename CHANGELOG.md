@@ -2,6 +2,31 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+v2 批次 D：视觉重排（方案 1「大环 + 抽屉」）—— 界面从「八颗按钮 + 常驻二维码」改成「一颗环、一颗主按钮、一个抽屉」。
+
+### 新增
+
+- `dshconsole/ui_theme.py`：配色、尺寸与五态视觉常量，UI 的唯一调色板。
+- `dshconsole/widgets.py`：`StatusRing`（CTkCanvas 画弧的状态环）、`DrawerMenu`（⋯ 抽屉）、`QrOverlay`（二维码浮层）、`LogOverlay`（全屏日志浮层），以及浮层共用行为（居中、Esc 关闭、点浮层外面关闭）。
+- 顶部 120px 状态环：弧长随五态变化，环内写状态词与 PID；环外右侧一行放手机访问结论与 Tailscale / 局域网地址。
+- 单一主操作按钮，文案与配色随五态变化（启动 DSH / 停止 DSH / 修复/重启 / 重新探测），点击走的就是原有回调。
+
+### 变更
+
+- 其余操作收进右上角「⋯」应用内抽屉：刷新状态、重启、切换 Web 端口、手机访问二维码、复制手机/本机地址、两个 UAC 开关、导出诊断包、日志跟随、关闭行为、退出；队列非空时附「取消排队」。
+- 常驻二维码区整块移除：点「手机访问」弹模态浮层（地址下拉 + 二维码 + 复制按钮）。
+- 运行日志默认只显示末尾 15 行，右下角「展开全屏」开独立日志窗口；跟随、打码、2000 行截断自愈仍走同一份 `logtail` 链路。
+- 「关闭窗口时收进托盘 / 直接退出」从页脚布尔开关改成抽屉里的切换项，托盘行为不变。
+- `--selftest` 标记更新：保留 `qr / clear / adopt_shown / adopt_hidden / log_lines / trim / addresses`，新增 `ring / menu_items / overlay_open / overlay_closed / log_collapsed / log_expanded`。
+- 测试 189 → 203 例（新增 `tests/test_ui_theme.py`：五态视觉、尺寸常量、主按钮映射；`tests/test_gui_hooks.py` 补托盘退回普通窗口两条）。
+
+### 修复
+
+- Tk 9.0 下 `create_arc` 的 `extent` 取 360 或 359.9 会被归零、整圈画不出来；状态环封顶 359 度。
+- 150% DPI 下「⋯」抽屉按逻辑宽度定位会探出窗口右侧；改为画完后按实际像素宽度右对齐。
+
 ## [2.0.0] - 2026-11-03
 
 首个「可发布」版本，四批合成：A 可移植性 → B1/B2 正确性与可观测性 → C 体验层 → E 可发布构建。
