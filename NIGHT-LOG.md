@@ -144,3 +144,38 @@ Ran 124 tests / FAILED (failures=1)
 - Release 挂 exe（等你决定是否接受"未签名 + SmartScreen 提示"）
 - 干净机器 / VC++ 运行库 / 杀软误报：需要另一台机器
 - 把"状态刷新压到 2 秒内"（要动认进程的判定路径，风险不值得）
+
+## 05:50 更新：批次 D 落地、v2.1.0 发布、自签名落地（以下结论覆盖上面「等你拍板」1、3 两条）
+
+### 你睡前的两个决定
+- 「①采用方案1」（m00734）→ 批次 D 按方案 1 做完。
+- 「1.采用自签名，签在 YANG TIANRUI 个人名下 2.不申请 3.这一步随你便吧」（m00748）→ 自签名工具入主干，但不申请 CA、不挂 Release。
+
+### 批次 D 验收（我独立复跑，不是采信子代理自述）
+- 提交：`70ec70b`（feat(ui) 界面重排，8 文件 +1006/−163）+ `0a7589a`（fix(ui) 我复审打回的两处，3 文件 +99/−7）
+- 用例 189 → **208**，两个解释器都 `Ran 208 tests / OK`；`--selftest` / `--stop-selftest` 均 exit 0
+- selftest marker（一字未变）：`qr=True clear=True adopt_shown=True adopt_hidden=True log_lines=2000 trim=True addresses=True ring=运行中 menu_items=12 overlay_open=True overlay_closed=True log_collapsed=15 log_expanded=True`
+- 核心 12 个模块零改动：`git diff --name-only 0d31b62 HEAD` 只有 dsh_gui.py / ui_theme.py / widgets.py / 三个测试 / README / CHANGELOG / CI
+- 六张真窗口截图我逐张看过：%TEMP%\d_viz\01-stopped / 02-running / 03-degraded / 04-menu / 05-qr / 06-log-expanded
+
+### 我打回的两处（都在截图里看出来的）
+1. 主窗口底部约 127px 死白带 → 日志卡改 `pack(fill="both", expand=True)`，15 行变**下限**（2000 行截断未动），01/03 重抓后日志卡底边距底边约 22px。
+2. 全屏日志顶部第一行被切半行 → 根因不是逻辑行错位，是自动换行的续行；`index("@0,0")` 看不出，改用 `dlineinfo` 的 `dlineinfo` 像素对齐（`dshconsole/widgets.py:36 snap_to_line`），06 重抓首行完整。
+   （主窗口日志框**故意**没加：跟随日志时"最新一行完整可见"优先。）
+
+### 自签名（commit `0d31b62`）
+- 证书 `CN=YANG TIANRUI`，指纹 `049AD1900E335BF8C9C3BB4F70619085BF2DA537`，notAfter 2029-11-03，私钥 NonExportable（导不出 .pfx）
+- `scripts/sign-self-signed.ps1` 一把跑完：查/建证书 → 导出 `certs/dsh-console-selfsigned.cer` → 按需写 `CurrentUser\Root` → SHA256 + DigiCert 时间戳签名 → 打印撤销命令
+- 实测 `Get-AuthenticodeSignature` → `Valid / Signature verified.`，签名者 `CN=YANG TIANRUI`，时间戳 2037 到期
+- 三个坑写进 `docs/self-signed-local.md`：① 自签名必须有一台机器信任根才可能 Valid；② `Import-Certificate` 往 `Root` 写会因「此操作中不允许使用 UI」失败，要用 .NET `X509Store` 直接 Add；③ **.ps1 必须 UTF-8 带 BOM**，否则 PowerShell 5.1 按 cp936 解码会把中文串尾引号吞掉，报 `Unexpected token '}'`（症状远离真错处）
+
+### 2.1.0 发布
+- 版本号 2.1.0：`dshconsole/__init__.py` / `version_info.txt` / CHANGELOG / README 全对齐；本机实测 PE 版本 `2.1.0.0`
+- 干净重建 + 重签：未签名 32,172,230 B → 签名后 32,179,368 B，SHA256 `930956ABF15D410BBF0FA01C125CD0B6B00247FE8CF4570D91A0C5B7E5DB38CB`
+- 冻结 exe `--selftest` exit 0（构建后先杀残留 DSHConsole 进程再签名——不杀会 `The process cannot access the file`）
+- CI 两轮全绿：`41528368420`（0a7589a）、`41528549538`（7568013）
+- Release：https://github.com/berserkross/dsh-little-fat-fish-console/releases/tag/v2.1.0 —— 仍**不挂 exe**（自签名在别人机器上显示"未知发布者（链不可信）"，比不签名更容易误导）
+
+### 仍需要你在真机上确认的
+- 双击 `dist\DSHConsole.exe`（这份是 2.1.0 已自签名的）：托盘图标、关窗收托盘、第二次启动唤醒前窗、大环在当前 DPI 下的观感
+- 手机通过二维码地址真能打开（我只验证到链路通 + 401 token 门禁）
