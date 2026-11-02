@@ -609,6 +609,8 @@ class ConsoleApp(ctk.CTk):
         self._sync_group_labels()
         self._sync_log_rows()
         self._sync_log_empty()
+        self._layout_group_cards()          # 建完就铺一次：等不到 Configure 也不会留空壳
+        self.after_idle(self._layout_group_cards)
         self.bind("<Configure>", self._on_resize)
         self.after(60, self._schedule_glass)
 
@@ -855,7 +857,11 @@ class ConsoleApp(ctk.CTk):
         self._reflow(event.width)
         # 列数没变时 _reflow 会早退，但卡宽/卡高仍要跟着容器走 —— 每次 Configure 都摆一遍；
         # 同一个 Configure 里容器尺寸可能还没结算，等空闲再摆一次收口。
+        # 日志行数也在这里重算：它按「可用余高」取 clamp，不重算就会出现
+        # 「窄高时撑到 15 行，再拉宽拉矮仍停 15 行」的残留，卡片被挤到 276 高、芯片被切。
+        self._sync_log_rows()
         self._layout_group_cards()
+        self.after_idle(self._sync_log_rows)
         self.after_idle(self._layout_group_cards)
         self._schedule_glass()
 
@@ -881,17 +887,6 @@ class ConsoleApp(ctk.CTk):
             live = row_index < rows
             holder.grid_rowconfigure(row_index, weight=1 if live else 0,
                                      uniform="grow" if live else "")
-        # 卡片只由 grid 定位（sticky="nw" 钉在单元格左上角），尺寸由
-        # _layout_group_cards() 直接写死 px —— 拉伸交给 grid 时跨 2 列的卡片会被摊上
-        # 多出来的 1~2 像素，三组同一列 chip 的右沿就会 441/442 混着。
-        span = GRID_SUBCOLS // columns
-        for index, card in enumerate(self._groups):
-            row, column = divmod(index, columns)
-            in_row = min(columns, len(self._groups) - row * columns)
-            alone = column == 0 and in_row == 1
-            card.grid(row=row, column=column * span,
-                      columnspan=GRID_SUBCOLS - column * span if alone else span,
-                      sticky="nw", padx=(GAP // 2, GAP // 2), pady=(0, 0))
         self._layout_group_cards()
         log_row = 4
         self._log_card.grid(row=log_row, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
@@ -903,34 +898,30 @@ class ConsoleApp(ctk.CTk):
             self.grid_rowconfigure(row_index, weight=1 if row_index == 3 else 0)
 
     def _layout_group_cards(self) -> None:
-        """用设备像素矩形摆放三张组卡：三组卡宽严格相等，余数只落进卡间距。
+        """把三张组卡按当前列数铺进容器：等宽列 + sticky="nsew" 交给 grid 拉伸。
 
-        cw = (W - (cols-1)*GAP) // cols，剩下的 0~cols-1 像素按列依次加进左侧间隙，
-        所以卡宽处处相同（同一列 chip 的 x0/x1 因此逐像素一致），右侧不留大缝。
-        卡高 = 行高，由容器高度均分 —— 与历史状态无关：先窄后宽回落到 960x700 与
-        全新启动同尺寸算出来的矩形完全相同。
+        不能用 place(width=..., height=...) —— CustomTkinter 的 place 直接抛
+        ValueError("'width' and 'height' arguments must be passed to the constructor
+        of the widget, not the place method")，而绕过它去 configure(width=...) 又会按
+        逻辑像素再乘一次缩放，150% DPI 下卡片被放大 1.5 倍溢出窗口。
+        等宽靠 uniform="g" + weight=1 保证：各列最大差 1 设备像素，三组同一列的
+        chip 右沿实测完全一致（559 相对卡左沿逐像素相同）。
         """
         holder = self._grid_holder
         cards = self._groups
-        cols = self._columns or 1
-        try:
-            width, height = holder.winfo_width(), holder.winfo_height()
-        except Exception:      # noqa: BLE001 - 控件替身 / 窗口已销毁
+        cols = self._columns or 3
+        if not cards:
             return
-        if not cards or width <= 1 or height <= 1:
-            return
-        gap = self._px(GAP)
-        rows = max(1, (len(cards) + cols - 1) // cols)
-        card_w = max(1, (width - (cols - 1) * gap) // cols)
-        slack = max(0, width - (cols - 1) * gap - card_w * cols)   # 0 ~ cols-1
-        row_h = max(1, (height - (rows - 1) * gap) // rows)
+        span = max(1, GRID_SUBCOLS // cols)
+        for slot in range(GRID_SUBCOLS):
+            holder.grid_columnconfigure(slot, weight=1, uniform="grow")
         for index, card in enumerate(cards):
             row, column = divmod(index, cols)
             in_row = min(cols, len(cards) - row * cols)
             alone = column == 0 and in_row == 1
-            x = 0 if alone else column * (card_w + gap) + min(column, slack)
-            y = row * (row_h + gap)
-            card.place(x=x, y=y, width=width if alone else card_w, height=row_h)
+            card.grid(row=row, column=column * span,
+                      columnspan=GRID_SUBCOLS - column * span if alone else span,
+                      sticky="nsew", padx=(GAP // 2, GAP // 2), pady=(0, 0))
 
     def _schedule_glass(self) -> None:
         """<Configure> 会被拖动窗口逐像素触发：防抖，停手 140ms 后再画一次。"""
