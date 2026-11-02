@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <g stroke="#0A1C34" stroke-linejoin="round" stroke-linecap="round">
+    <!-- head silhouette (hair) -->
+    <ellipse cx="16" cy="15.2" rx="13.4" ry="13.6" fill="#123C6E" stroke-width="1.5"/>
+    <!-- ear cups -->
+    <circle cx="2.6" cy="16.4" r="2.6" fill="#3BDCF0" stroke-width="1.2"/>
+    <circle cx="29.4" cy="16.4" r="2.6" fill="#3BDCF0" stroke-width="1.2"/>
+    <!-- face -->
+    <ellipse cx="16" cy="17.4" rx="9.9" ry="9.4" fill="#F2F8FF" stroke-width="1.2"/>
+    <!-- bangs fringe -->
+    <path d="M6.6 13.6 C8.4 6.8 11.8 4.6 16 4.6 C20.2 4.6 23.6 6.8 25.4 13.6 C23.2 11.4 21 11.6 19.2 12.8 C18 10.6 17 10.4 16.2 12.4 C15.4 10.4 14.2 10.6 13 12.8 C11.2 11.6 8.8 11.4 6.6 13.6 Z" fill="#123C6E" stroke-width="1"/>
+    <!-- eyes -->
+    <ellipse cx="11.5" cy="17.6" rx="3" ry="3.5" fill="#0A1C34"/>
+    <ellipse cx="20.5" cy="17.6" rx="3" ry="3.5" fill="#0A1C34"/>
+    <circle cx="10.5" cy="16.2" r="1.15" fill="#FFFFFF" stroke="none"/>
+    <circle cx="19.5" cy="16.2" r="1.15" fill="#FFFFFF" stroke="none"/>
+    <!-- scarf -->
+    <path d="M10.4 24.4 C12.6 25.8 19.4 25.8 21.6 24.4" fill="none" stroke="#3BDCF0" stroke-width="2.6"/>
+    <!-- shoulders -->
+    <path d="M16 26.4 C11.6 26.4 8.2 27.8 7 31.4 L25 31.4 C23.8 27.8 20.4 26.4 16 26.4 Z" fill="#123C6E" stroke-width="1.3"/>
+  </g>
+</svg>
