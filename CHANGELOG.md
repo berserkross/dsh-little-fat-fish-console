@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+v2 批次 G：把「真半透明」改成「画出来的玻璃」（用户复审：桌面浏览器文字在卡片、日志区、状态行背后都能读出来，是透字不是质感）+ 头部换 ico 头像 + 日志不再吸高 + 按钮网格可测量。
+
+### 新增
+
+- `tests/shoot_ui.py` / `tests/verify_shots.py` / `tests/measure_chips.py`：截图、截图自检、按钮测量表三个脚本。截图脚本每次抓图都自检「连抓两张一致 + 外扩图内缩后与窗口本身一致」，不合格就重抓 —— 这台机器上 Windows 会把窗口一路挪偏（曾挪到 rect=(-32000,-32000) 全黑），桌面输入法浮窗也会闯进画面。
+- `widgets.avatar()`：仓库根 `DeepSeekChan [256x256].ico` → 裁 `(24,18)-(248,242)` → 4 倍超采样圆遮罩（圆心 `(136,130)`、半径 `112`）→ LANCZOS 缩回；头部徽章、空态插画、窗口图标共用同一角色。
+- `ui_theme.log_rows_with_empty()`：空日志走 `LOG_ROWS_EMPTY=12` 行，有日志仍按 `clamp(行数,6,26)`。
+- marker 新增 `rows` / `rows_lines` / `ico` 字段；`rows` 由 Text 的 `index("end-1c")` 实际行数算出（此前取在灌满 2000 行之后，marker 写 15 行、截图只有 4 行）。
+
+### 变更
+
+- `WINDOW_ALPHA` 0.96 → **1.0**；玻璃改成画出来：竖向渐变 `(26,40,74)`→`(14,22,44)`→`(5,8,18)` + 极淡网格/星点 + 卡面 `CARD_FILL_ALPHA=240`（0.94 等效）+ `GLASS_EDGE` 1px 亮边 + 卡片下方 6px 偏移柔影。透明度只留在装饰层。
+- 头部条 64 → 88 逻辑像素、徽章 52 → 64（上下各留 12），头部两行等权。
+- 日志区不再 `sticky="nsew"` 吸高：高度固定 = `clamp(行数,6,26)` 行，剩余高度交给三组操作卡那一行（`weight=1`）；日志 Text 显式设 `selectbackground/selectforeground/inactiveselectbackground` 为调色板色、`exportselection=False`，插入后清 `sel`，截图脚本抓图前再 `selection_clear()` —— 日志下沿那条 `(0,115,208)` 全宽蓝带（Windows 选中色）随之消失。
+- 组卡 `grid_propagate(False)` + 显式高度、holder 上 `uniform="grp"`、组内行 `uniform="chiprow"`：三组等宽、同列 chip 的 x0/x1 一致、chip 高度一致；末行只剩一项时 `columnspan=2` 通栏（此前三组卡宽 450/472/450）。
+- 窗口图标改成 ico 优先（`iconbitmap`），PNG 仅作回退。
+
+### 修复
+
+- 日志「4 行 + 一大片空区」：`_log_room()` 改按固定栈算（原先量日志卡自身位置，被 `weight=1` 的组卡挤成 6 行）。
+- 头部圆形徽章底弧被「启动 DSH」通栏主按钮压掉：头部行等权 + 徽章 `corner_radius=size//2`。
+- 白底垫后截图里主窗口整体偏移/全黑：抓图前把窗口钉回 `(160,160)` 并 `deiconify`，抓完自检重抓。
+
 v2 批次 F：界面皮肤（轻科幻 + 可爱 + 蓝主色 + 半透明）—— 结构验收后的一层皮，外加复审挑出的五处硬伤。
 
 ### 新增

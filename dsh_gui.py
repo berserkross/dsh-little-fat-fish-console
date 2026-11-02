@@ -29,11 +29,11 @@ from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BADGE_SIZE, BG, BO
                                  BORDER_STRONG, CARD, CARD2, CARD3, CARD_RADIUS, CHIP,
                                  CHIP_HOVER, CHIP_RADIUS, CYAN, DIM, EMPTY_LOG_HINT, FAINT,
                                  FONT, GAP, GREEN, GRID_BTN_H, GRID_PAD, HEADER_H, HERO_SIZE,
-                                 LOG_LINE_PX, LOG_ROWS_MAX, LOG_ROWS_MIN, LOG_TEXT, MONO, PAD,
-                                 PANEL_DEEP, PHASE_STYLE, PHASE_WORD, PRIMARY, PRIMARY_GLOW,
-                                 PRIMARY_HOVER, PRIMARY_RADIUS, RED, RED_DARK, SLATE,
-                                 SLATE_DARK, TEXT, WINDOW_ALPHA, WINDOW_MIN, WINDOW_SIZE,
-                                 grid_columns, log_rows)
+                                 LOG_LINE_PX, LOG_ROWS_EMPTY, LOG_ROWS_MAX, LOG_ROWS_MIN,
+                                 LOG_TEXT, MONO, PAD, PANEL_DEEP, PHASE_STYLE, PHASE_WORD,
+                                 PRIMARY, PRIMARY_GLOW, PRIMARY_HOVER, PRIMARY_RADIUS, RED,
+                                 RED_DARK, SLATE, SLATE_DARK, TEXT, WINDOW_ALPHA, WINDOW_MIN,
+                                 WINDOW_SIZE, grid_columns, log_rows, log_rows_with_empty)
 
 CFG = config.resolve()          # 本机探测结果；缺项为 None，探测失败不抛异常
 HARNESS = CFG.harness
@@ -235,7 +235,8 @@ class ConsoleApp(ctk.CTk):
         self.geometry("%dx%d" % WINDOW_SIZE)
         self.minsize(*WINDOW_MIN)
         self.configure(fg_color=BG)
-        # 整窗不透明 0.96：再淡一点背景就会在浅色桌面上漏出来，压字对比度。
+        # 整窗 alpha=1.0：玻璃改为「画」出来（衬底渐变 + 近实心卡面 + 亮边 + 柔影），
+        # 桌面内容一律不参与成像 —— 上一轮 0.96 让浏览器里的字在卡片背后读得出来。
         try:
             self.attributes("-alpha", WINDOW_ALPHA)
         except Exception:      # noqa: BLE001 - 无合成器（远程桌面 / 极简 WM）
@@ -531,10 +532,16 @@ class ConsoleApp(ctk.CTk):
                     padx=PAD, pady=(PAD, 0))
         header.grid_propagate(False)
         header.grid_columnconfigure(2, weight=1)   # 弹性空列：把手机访问那块顶到右端
+        # 两行都给 weight：多余的 24px 上下均分，徽章在 88px 的框里正好居中
+        # （上一轮行高合计 68 > 头部 64，父框把玻璃圆盘的下弧裁掉了）。
+        header.grid_rowconfigure(0, weight=1)
+        header.grid_rowconfigure(1, weight=1)
         self._panels["header"] = header
         size = self._px(BADGE_SIZE)
-        self._badge_label = ctk.CTkLabel(header, text="", fg_color=CARD, width=size, height=size)
-        self._badge_label.grid(row=0, column=0, rowspan=2, padx=(11, 12))
+        # corner_radius=size//2：底盘的四角跟面板同色，圆图之外不留方块
+        self._badge_label = ctk.CTkLabel(header, text="", fg_color=CARD, width=size,
+                                         height=size, corner_radius=size // 2)
+        self._badge_label.grid(row=0, column=0, rowspan=2, padx=(11, 12), pady=0)
         ctk.CTkLabel(header, text=APP_TITLE, font=_font(13, True), text_color=TEXT,
                      anchor="w").grid(row=0, column=1, columnspan=2, sticky="w", pady=(10, 0))
         line = ctk.CTkFrame(header, fg_color=CARD)
@@ -599,9 +606,28 @@ class ConsoleApp(ctk.CTk):
             corner_radius=CHIP_RADIUS, cursor="hand2")
 
     def _build_grid(self) -> None:
-        """功能网格：三组语义分组，组内 2 列按钮，每颗带图标与看得见的面板底色差。"""
+        """功能网格：三组语义分组，组内 2 列按钮，列宽可测量且三组一致。
+
+        三张组卡放在同一个容器里（容器左右内缩 PAD-GAP//2，每张卡左右各留 GAP//2）：
+        于是每张卡的宽度都等于「列宽 - GAP」，卡间距是 GAP，最外侧仍是 PAD —— 三组卡
+        等宽是构造出来的，不是碰巧对上的。
+        """
+        holder = ctk.CTkFrame(self, fg_color=BG)
+        self._grid_holder = holder
+        for index in range(GRID_SUBCOLS):
+            holder.grid_columnconfigure(index, weight=1, uniform="grp")
+        # 三组按钮行数取最大值（手机访问 5 项 = 3 行）：行数少的组把多出来的一行留白，
+        # 于是同一窗口里每颗 chip 的高度处处相同 —— 否则「服务」2 行会被拉成「手机访问」
+        # 3 行的 1.5 倍高，看着像两种控件。
+        self._grid_rows_max = max(max(1, (len(entries) + 1) // 2)
+                                  for _title, entries in ACTION_GROUPS)
         for group_index, (title, entries) in enumerate(ACTION_GROUPS):
-            card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=CARD_RADIUS)
+            card = ctk.CTkFrame(holder, fg_color=CARD, corner_radius=CARD_RADIUS)
+            # 组卡不跟内容要宽度：否则「开启手机访问（UAC）」这类长文案会把中间那张卡
+            # 顶宽 22px，三组列宽就对不齐了。宽度完全由等宽列决定，内容只影响高度。
+            card.grid_propagate(False)
+            card.configure(height=self._px(
+                30 + self._grid_rows_max * (GRID_BTN_H + GRID_PAD)))
             card.grid_columnconfigure(0, weight=1, uniform="chip")
             card.grid_columnconfigure(1, weight=1, uniform="chip")
             ctk.CTkLabel(card, text=title, font=_font(11, True), text_color=FAINT,
@@ -609,6 +635,8 @@ class ConsoleApp(ctk.CTk):
                                           padx=12, pady=(9, 6))
             for index, (icon, text, name) in enumerate(entries):
                 row, column = divmod(index, 2)
+                # 末行只剩一项 → 通栏：不留半行空洞
+                alone = column == 0 and index == len(entries) - 1
                 button = ctk.CTkButton(
                     card, text=f"{icon}  {text}", height=GRID_BTN_H,
                     corner_radius=CHIP_RADIUS, fg_color=CHIP, hover_color=CHIP_HOVER,
@@ -617,21 +645,30 @@ class ConsoleApp(ctk.CTk):
                     # 「关闭窗口时：收进托盘」在 12 号时会溢出裁掉末字。
                     font=_font(11), anchor="w", cursor="hand2",
                     command=getattr(self, name))
-                button.grid(row=row + 1, column=column, sticky="nsew",
-                            padx=(10, 5) if column == 0 else (5, 10),
+                button.grid(row=row + 1, column=column,
+                            columnspan=2 if alone else 1, sticky="nsew",
+                            padx=(10, 10) if alone else (10, 5) if column == 0 else (5, 10),
                             pady=(0, GRID_PAD))
+                card.grid_rowconfigure(row + 1, weight=1, uniform="chiprow")
                 self._glow_hover(button)
                 self._group_buttons[name] = button
+            # 空行也参与分配并共用 uniform：三组永远是同样多的行、行高相同，
+            # 于是三组 chip 的高度处处一致（不会出现某组按钮被拉高一截）。
+            for spare in range(len(entries) // 2 + 1, self._grid_rows_max + 1):
+                card.grid_rowconfigure(spare, weight=1, uniform="chiprow")
             self._groups.append(card)
             self._panels["group%d" % group_index] = card
 
     def _build_log(self) -> None:
-        """常驻日志：唯一会拉伸的一块；空的时候放鲸鱼娘插画，而不是留一屏黑。"""
+        """常驻日志：高度 = clamp(实际行数, 6, 26) 行，不再吸收剩余高度。
+
+        剩余高度归三组卡那一行（root 第 3 行 weight=1）。日志卡自身只占「抬头 + 正文」，
+        所以「4 行日志 + 40% 空区」这种场面不会再有：行数少，这一块就矮。
+        """
         card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=CARD_RADIUS)
         self._log_card = card
         self._panels["log"] = card
         card.grid_columnconfigure(0, weight=1)
-        card.grid_rowconfigure(1, weight=1)
         head = ctk.CTkFrame(card, fg_color=CARD)
         head.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 5))
         ctk.CTkLabel(head, text="运行日志", font=_font(12, True), text_color=TEXT,
@@ -650,7 +687,9 @@ class ConsoleApp(ctk.CTk):
                                   fg_color=PANEL_DEEP, text_color=LOG_TEXT, font=_mono(12),
                                   corner_radius=10, border_width=0, wrap="word",
                                   state="disabled")
-        self.log.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        # sticky="ew" 而不是 "nsew"：正文不许再被父格拉高，高度只由行数决定
+        self.log.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        self._harden_log_text()
         # 空态：同一格里盖一张插画 + 一句提示。素材缺失时 widgets 已经回退成矢量鲸鱼，
         # 所以这里永远有图形可看，不会出现「图片加载失败」的空框。
         self._empty = ctk.CTkFrame(card, fg_color=PANEL_DEEP, corner_radius=10)
@@ -666,6 +705,33 @@ class ConsoleApp(ctk.CTk):
                      fg_color=PANEL_DEEP).grid(row=1, column=0, pady=(0, 0))
         ctk.CTkLabel(self._empty, text=EMPTY_LOG_HINT, font=_font(12), text_color=DIM,
                      fg_color=PANEL_DEEP, justify="center").grid(row=2, column=0, pady=(8, 0))
+
+
+    def _harden_log_text(self) -> None:
+        """把日志框的三种系统选中色钉死到调色板，并让选中区不参与剪贴板同步。
+
+        上一轮截图在正文下沿有一条全宽 (0,115,208) 的蓝带 —— 那是 Tk Text 的**系统**
+        选中背景（Windows 高亮色）透出来的：末行一旦被选中，选中区会铺满控件宽度。
+        这里把 selectbackground / selectforeground / inactiveselectbackground 全换成
+        主题色，insertwidth 归零（没有闪烁的插入光标），exportselection=False（焦点离开
+        时不会保留高亮选区），并在每次写日志后主动清掉可能残留的 "sel" 标签。
+        """
+        try:
+            inner = self.log._textbox
+            inner.configure(selectbackground=CARD3, selectforeground=TEXT,
+                            inactiveselectbackground=CARD2, exportselection=False,
+                            insertwidth=0, insertbackground=LOG_TEXT, takefocus=0,
+                            highlightthickness=0, borderwidth=0)
+        except Exception:      # noqa: BLE001 - 控件替身 / CTk 内部结构变了
+            return
+        self._clear_log_selection()
+
+    def _clear_log_selection(self) -> None:
+        """清掉日志里的选中区：截图里那条蓝带就是它铺满整行造成的。"""
+        try:
+            self.log.tag_remove("sel", "1.0", "end")
+        except Exception:      # noqa: BLE001 - 控件替身 / 已销毁
+            pass
 
     def _build_foot(self) -> None:
         """底栏：本机入口 + 关闭按钮当前行为。做成一条玻璃条，不再是两截悬空的字。"""
@@ -701,19 +767,31 @@ class ConsoleApp(ctk.CTk):
         self._columns = columns
         span = GRID_SUBCOLS // columns
         rows = max(1, (len(self._groups) + columns - 1) // columns)
+        holder = self._grid_holder
+        # 容器左右内缩 PAD-GAP//2、每张卡左右各 GAP//2：卡宽 = 列宽 - GAP（三组严格等宽），
+        # 卡间距 = GAP，最外侧正好落在 PAD 上，与头部/主按钮/底栏同一条竖线。
+        holder.grid(row=3, column=0, columnspan=GRID_SUBCOLS, sticky="nsew",
+                    padx=PAD - GAP // 2, pady=(0, 0))
         for index, card in enumerate(self._groups):
             row, column = divmod(index, columns)
-            card.grid(row=3 + row, column=column * span, columnspan=span, sticky="nsew",
-                      padx=(0 if column == 0 else GAP // 2,
-                            0 if column == columns - 1 else GAP // 2),
+            in_row = min(columns, len(self._groups) - row * columns)
+            # 某行只剩一张卡时它通栏（宽 = 该行整行可用宽），不留半行空洞
+            alone = column == in_row - 1 and column == 0
+            card.grid(row=row, column=column * span,
+                      columnspan=GRID_SUBCOLS - column * span if alone else span,
+                      sticky="nsew", padx=(GAP // 2, GAP // 2),
                       pady=(0, 0 if row == rows - 1 else GAP))
-        log_row = 3 + rows
-        self._log_card.grid(row=log_row, column=0, columnspan=GRID_SUBCOLS, sticky="nsew",
+            card.grid_rowconfigure(0, weight=0)
+        for row_index in range(rows):
+            holder.grid_rowconfigure(row_index, weight=1, uniform="grow")
+        log_row = 4
+        self._log_card.grid(row=log_row, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
                             padx=PAD, pady=(GAP, 0))
         self._foot.grid(row=log_row + 1, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
                         padx=PAD, pady=(GAP, PAD))
+        # 剩余高度只给组卡那一行（第 3 行）；日志行与底栏都按内容高
         for row_index in range(log_row + 2):
-            self.grid_rowconfigure(row_index, weight=1 if row_index == log_row else 0)
+            self.grid_rowconfigure(row_index, weight=1 if row_index == 3 else 0)
 
     def _schedule_glass(self) -> None:
         """<Configure> 会被拖动窗口逐像素触发：防抖，停手 140ms 后再画一次。"""
@@ -777,32 +855,48 @@ class ConsoleApp(ctk.CTk):
             pass
 
     def _log_room(self) -> float:
-        """日志正文最多能占多少像素。
+        """日志正文最多能占多少逻辑像素。
 
-        关键是不能拿日志卡自己的高度来量：卡片会长到内容那么大，再拿它当上限就成了
-        自己证明自己，窗口矮的时候正文会被裁掉半行。日志卡上沿以上的东西（头部、主按钮、
-        三组卡片）高度与日志无关，窗口底部的页脚也是，所以用「窗口高 - 上沿 - 页脚」算。
+        绝不能按日志卡自己的位置/高度量：组卡那一行 weight=1 会吃掉剩余高度，日志卡就
+        坐在它下面，「按自己的位置算」量到的其实是自己当前的高度 —— 自己证明自己，
+        行数被自己锁死在 6 行。所以只按**固定栈**算：窗口高 - 头部 - 主按钮 - 条件槽 -
+        组卡的自然高度（组内 2 列 N 行时的高度）- 底栏，再减日志卡自己的抬头行与内边距。
         """
-        card = getattr(self, "_log_card", None)
         try:
             win_h = self.winfo_height()
-            top = card.winfo_rooty() - self.winfo_rooty()
-            foot_h = self._foot.winfo_height()
+            scale = self._get_window_scaling() or 1.0
         except Exception:      # noqa: BLE001 - 控件替身 / 还没布局
             return 10 ** 6
-        if win_h <= 120 or top <= 0:
+        if win_h <= 120:
             return 10 ** 6
-        # 全部换算成逻辑像素再减：抬头行 + 上下内边距实测占 56
-        scale = self._get_window_scaling() or 1.0
-        return (win_h - top - foot_h) / scale - 2 * GAP - PAD - 56
+        grid_rows = max(1, max((len(entries) + 1) // 2 for _title, entries in ACTION_GROUPS))
+        card_h = 30 + grid_rows * (GRID_BTN_H + GRID_PAD)      # 标题行 + N 行按钮
+        foot_h = 40
+        stack = (PAD + HEADER_H + GAP + ACTION_H + GAP + card_h + GAP + foot_h + PAD)
+        return win_h / scale - stack - 56                      # 56 = 抬头行 + 上下内边距
+
+    def _log_line_count(self) -> int | None:
+        """控件里真实的文本行数（Text 的 index("end-1c") 行号）；控件替身返回 None。"""
+        try:
+            return int(str(self.log.index("end-1c")).split(".")[0])
+        except Exception:      # noqa: BLE001 - 控件替身 / 已销毁
+            return None
 
     def _sync_log_rows(self) -> None:
-        """日志区高度按内容长：下限 LOG_ROWS_MIN 行，上限 LOG_ROWS_MAX 行。"""
-        try:
-            total = int(str(self.log.index("end-1c")).split(".")[0])
-        except Exception:      # noqa: BLE001 - 控件替身
+        """日志区高度 = clamp(控件实际行数, LOG_ROWS_MIN, LOG_ROWS_MAX) 行。
+
+        行数只认 Text 自己数的（index("end-1c")），所以 marker 里的 rows 与截图里的行数
+        说的是同一件事。空态另有一条下限（LOG_ROWS_EMPTY）：不然 140px 的圆形头像会被
+        6 行 = 96px 的格子裁掉。
+        """
+        total = self._log_line_count()
+        if total is None:
             return
-        rows = log_rows(total, self._log_room())      # 两边都是逻辑像素
+        # 空 Text 的 index("end-1c") 是 "1.0"（连空行都算 1 行），所以"空"不能只看行号：
+        # 没有字就按 0 行走空态下限，否则 140px 的头像会被 6 行挤掉。
+        empty = total <= 1 and not str(self.log.get("1.0", "end-1c")).strip()
+        rows = log_rows_with_empty(0 if empty else total,
+                                   self._log_room())      # 两边都是逻辑像素
         # 说明行每次都要刷新：首次布局时行数没变，若跟着早退回退就永远没文案。
         hint = getattr(self, "lbl_log_hint", None)
         if hint is not None:
@@ -840,6 +934,7 @@ class ConsoleApp(ctk.CTk):
     def logline(self, msg: str) -> None:
         self.log.configure(state="normal")
         self.log.insert("end", time.strftime("[%H:%M:%S] ") + msg + "\n")
+        self._clear_log_selection()
         self._sync_log_empty(False)
         self._sync_log_rows()
         self._scroll_log_to_end()
@@ -864,6 +959,7 @@ class ConsoleApp(ctk.CTk):
             for line in lines:
                 self.log.insert("end", prefix + line + "\n")
             self._trim_log(limit)
+            self._clear_log_selection()
             self._sync_log_empty(False)
             self._sync_log_rows()
             self._scroll_log_to_end()
@@ -1680,9 +1776,21 @@ def selftest() -> int:
         ok_empty = app._log_empty == (not app.log.get("1.0", "end-1c").strip())
         # 玻璃背景板真的画出来了（不是空画布）
         ok_glass = getattr(app._backdrop, "_photo", None) is not None
+        # marker 里的 rows 必须与视觉一致：行数由控件自己数（Text 的 index("end-1c")），
+        # 高度由同一份行数算出。下面这一量发生在灌 2100 行之前 —— 那才是截图看到的一屏。
+        rows_lines = app._log_line_count() or 0
+        rows_shown = app._log_rows
+        ok_rows = ok_rows and rows_shown == log_rows_with_empty(rows_lines, app._log_room())
+        # ico 证据：文件路径 + 圆遮罩参数 + 徽章的实际设备像素
+        icon_path = resources.icon_path()
+        ico_field = ("%s|cut=cx%d,cy%d,r%d|dev=%dpx" % (
+            icon_path.name if icon_path is not None else "none",
+            widgets.AVATAR_CENTER[0], widgets.AVATAR_CENTER[1], widgets.AVATAR_RADIUS,
+            app._px(BADGE_SIZE)))
     except Exception:      # noqa: BLE001
         columns, ok_fit, ok_primary_full, ok_rows, ok_empty, ok_glass = (
             -1, False, False, False, False, False)
+        rows_lines, rows_shown, ico_field = -1, -1, "none"
 
     # 日志滚动上限：塞 2100 行后行数必须回到上限以内（C2）
     app._append_log([f"自检第 {i} 行" for i in range(MAX_LOG_LINES + 100)])
@@ -1742,9 +1850,10 @@ def selftest() -> int:
         f"groups={groups} columns={columns} fit={ok_fit} "
         f"phone_on={ok_phone_on} toggle_label={ok_toggle_label} "
         # 以下是批次 F 追加的字段（旧字段名与顺序不动）
-        f"primary_full={ok_primary_full} rows={log_collapsed} "
+        f"primary_full={ok_primary_full} rows={rows_shown} rows_lines={rows_lines} "
         f"rows_ok={ok_rows} empty_state={ok_empty} glass={ok_glass} fit_full={ok_fit_full} "
         f"hero_art={widgets.art_image('hero') is not None} "
+        f"ico={ico_field} "
         f"alpha={alpha_now} "
         "\n", encoding="utf-8")
     if sys.stdout:

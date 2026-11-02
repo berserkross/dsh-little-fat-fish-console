@@ -1,13 +1,13 @@
-"""自绘控件（批次 F「玻璃单列流」）：玻璃背景板、状态灯、鲸鱼娘素材、模态浮层、全屏日志窗。
+"""自绘控件（批次 G「绘制玻璃」）：玻璃背景板、状态灯、ico 头像、模态浮层、全屏日志窗。
 
 只负责「长什么样 + 怎么关」，不承载业务：浮层里的每一个动作都由调用方 dsh_gui 传进来。
 所有颜色与尺寸取自 ui_theme，改皮肤不必动这里。
 
-玻璃背景板是整窗唯一的「半透明」来源：customtkinter 会把 fg_color="transparent" 在创建
-时就解析成母控件的实底色（实测叠在 lowered Canvas 上也透不出来），所以真正的通透来自
-Pillow 预渲染的整窗图 —— 深蓝径向渐变 + <=6% 网格星点 + 每块面板外扩 PANEL_RIM 的
-玻璃框（1px 亮边 + 外柔影）。真实控件叠在图上，面板底色直接取渲染图上的采样色，
-两者同色所以无缝。
+玻璃是「画」出来的，不是真的半透明：整窗 alpha=1.0，桌面内容一律不参与成像。
+质感由 Pillow 预渲染的整窗图提供 —— 竖向深色渐变 + <=6% 网格星点 + 每块面板外扩
+PANEL_RIM 的玻璃框（近实心卡面 0.94 + 1px 亮边 + 上沿内高光 + 下方柔影）。真实控件
+叠在图上，面板底色直接取渲染图上的采样色，两者同色所以无缝。
+头部与空态的头像都用仓库里的 .ico 做圆形裁切（avatar / badge / hero_picture）。
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from functools import lru_cache
 from typing import Callable, Sequence
 
 import customtkinter as ctk
-from PIL import Image, ImageDraw, ImageFilter, ImageTk
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
 
 from . import resources
 from . import status as app_status
@@ -151,51 +151,121 @@ def mascot(role: str, size: int, base: str) -> Image.Image:
     return art.resize((s, s), Image.LANCZOS)
 
 
+# ---------------- ico 头像（头部徽章 / 空态大图 / 窗口图标） ----------------
+# 仓库根的 .ico 是「出血裁切」的头像：256x256 里真正的圆形头像圆心 (136,130)、半径 112，
+# 右边缘 160px 与下边缘 208px 落着不透明像素。直接贴方形会露出硬切口，所以一律用
+# 圆形遮罩裁切。遮罩在 4 倍目标尺寸上画再 LANCZOS 缩下来，边缘才是真的抗锯齿。
+AVATAR_CENTER = (136, 130)
+AVATAR_RADIUS = 112
+AVATAR_SUPERSAMPLE = 4
+
+
+@lru_cache(maxsize=1)
+def _avatar_source() -> Image.Image | None:
+    """读仓库里的 .ico（取最大帧）当头像源；缺失/坏图返回 None，由调用方回退矢量。"""
+    icon = resources.icon_path()
+    if icon is None:
+        return None
+    try:
+        with Image.open(icon) as raw:
+            sizes = list(raw.info.get("sizes") or [])
+            if sizes:
+                raw.seek(max(range(len(sizes)), key=lambda i: sizes[i][0] * sizes[i][1]))
+            return raw.convert("RGBA")
+    except Exception:  # noqa: BLE001 - 缺 Pillow 的 ico 解码器 / 文件坏了
+        return None
+
+
+@lru_cache(maxsize=8)
+def avatar(size: int) -> Image.Image | None:
+    """ico 头像的圆形裁切（透明底，圆外全透明）。无 ico 时返回 None。"""
+    source = _avatar_source()
+    if source is None:
+        return None
+    s = max(20, int(size))
+    cx, cy = AVATAR_CENTER
+    r = AVATAR_RADIUS
+    box = (cx - r, cy - r, cx + r, cy + r)          # (24,18)-(248,242)：整圆，无硬切口
+    crop = source.crop(box)
+    big = max(s * AVATAR_SUPERSAMPLE, s)
+    art = crop.resize((big, big), Image.LANCZOS)
+    mask = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, big - 1, big - 1), fill=255)
+    out = art.copy()
+    out.putalpha(mask)
+    return out.resize((s, s), Image.LANCZOS)
+
+
+def _disc(size: int, base: str, ratio: float, tint: float) -> Image.Image:
+    """圆形玻璃底盘（不透明），ratio 是直径占画布的比例。"""
+    s = max(20, int(size))
+    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    inset = s * (1.0 - ratio) / 2.0
+    ImageDraw.Draw(img).ellipse((inset, inset, s - inset, s - inset),
+                                fill=_rgb(blend(ui_theme.PRIMARY_GLOW, base, tint)) + (255,))
+    return img
+
+
 @lru_cache(maxsize=16)
 def badge(size: int, base: str) -> Image.Image:
-    """头部徽章：圆形玻璃底盘 + 淡蓝发光描边 + 鲸鱼娘。
+    """头部徽章：圆形玻璃盘 + 三层发光描边 + ico 头像的圆形裁切。
 
-    底盘底色必须等于所在面板的采样色，否则圆图的四个角会在面板上留下一个方块。
+    圆外全透明 —— 底盘的「方块角」不会再压在面板上；base 只用来算玻璃盘与描边的颜色，
+    调用方仍可以把它当面板采样色传进来。
     """
     s = max(20, int(size))
-    img = Image.new("RGBA", (s, s), _rgb(base) + (255,))
+    img = _disc(s, base, 1.0, 0.16)
     d = ImageDraw.Draw(img)
     # 外发光：三层由淡到浓的同心圆，模拟光晕（Canvas 没有 alpha，Pillow 这里有）
     for step, alpha in ((0, 34), (1, 58), (2, 92)):
         inset = s * (0.005 + 0.035 * (2 - step))
         d.ellipse((inset, inset, s - inset, s - inset),
                   outline=blend(ui_theme.PRIMARY_GLOW, base, alpha / 255.0))
-    d.ellipse((s * 0.03, s * 0.03, s * 0.97, s * 0.97),
-              outline=_rgb(blend(ui_theme.PRIMARY_GLOW, base, 0.55)))
-    # 玻璃盘：中心比边缘亮一点，像一块被照亮的圆玻璃
-    d.ellipse((s * 0.07, s * 0.07, s * 0.93, s * 0.93),
-              fill=_rgb(blend(ui_theme.PRIMARY_GLOW, base, 0.16)))
-    inner = mascot("idle", int(s * 0.74), base)
+    # 头像：留 7% 的玻璃圈，亮圈才不会被头像自己盖住
+    inner = avatar(int(s * 0.86)) or mascot("idle", int(s * 0.86), base).convert("RGBA")
     off = (s - inner.width) // 2
     img.alpha_composite(inner, (off, off))
+    d.ellipse((s * 0.03, s * 0.03, s * 0.97, s * 0.97),
+              outline=_rgb(blend(ui_theme.PRIMARY_GLOW, base, 0.62)))
     return img
 
 
 def hero_picture(size: int, base: str) -> Image.Image:
-    """空态插画（透明底），尺寸按窗口缩放后给，150% 下不会缩成一小坨。"""
-    return mascot("hero", size, base)
+    """空态大图：同一个 ico 头像的圆形裁切（透明底），尺寸按窗口缩放后给。
+
+    没有 ico 时退回矢量鲸鱼娘 —— 空态永远有图形可看，不会留一个空框。
+    """
+    s = max(24, int(size))
+    img = _disc(s, base, 1.0, 0.18)
+    d = ImageDraw.Draw(img)
+    for step, alpha in ((0, 22), (1, 44)):
+        inset = s * (0.004 + 0.03 * (1 - step))
+        d.ellipse((inset, inset, s - inset, s - inset),
+                  outline=blend(ui_theme.PRIMARY_GLOW, base, alpha / 255.0))
+    inner = avatar(int(s * 0.88)) or mascot("hero", int(s * 0.88), base).convert("RGBA")
+    off = (s - inner.width) // 2
+    img.alpha_composite(inner, (off, off))
+    d.ellipse((s * 0.045, s * 0.045, s * 0.955, s * 0.955),
+              outline=_rgb(blend(ui_theme.PRIMARY_GLOW, base, 0.58)))
+    return img
 
 
 def apply_window_icon(win) -> bool:
-    """标题栏图标：优先自绘 logo（PNG），缺失回退仓库里的 .ico。返回是否用上了素材。"""
-    logo = art_image("logo")
-    if logo is not None:
-        try:
-            win._icon_photo = ImageTk.PhotoImage(logo)  # 必须留引用，否则 Tk 回收后图标变空白
-            win.iconphoto(True, win._icon_photo)
-            return True
-        except Exception:  # noqa: BLE001 - 无显示环境
-            pass
+    """标题栏图标：仓库里的 .ico 优先（用户明确要求），PNG 只在 ico 读不到时回退。"""
     icon = resources.icon_path()
     if icon is not None:
         try:
             win.iconbitmap(str(icon))
+            return True
         except Exception:  # noqa: BLE001 - .ico 读不了（Linux / 坏图）
+            pass
+    logo = art_image("logo")
+    if logo is not None:
+        try:
+            # 必须留引用，否则 Tk 回收后图标变空白
+            win._icon_photo = ImageTk.PhotoImage(logo)
+            win.iconphoto(True, win._icon_photo)
+        except Exception:  # noqa: BLE001 - 无显示环境
             pass
     return False
 
@@ -262,21 +332,31 @@ class StatusLamp(ctk.CTkCanvas):
 # ---------------- 玻璃背景板 ----------------
 @lru_cache(maxsize=3)
 def _gradient(width: int, height: int) -> Image.Image:
-    """深蓝径向渐变：左上偏一点暖蓝，四周压到近黑（衬得住半透明白字）。
+    """整窗竖向深色渐变：顶 (26,40,74) → 中 (14,22,44) → 底 (5,8,18)，两侧再压 12%。
 
-    先算 96x96 再双三次放大 —— 渐变的低频特征不需要逐像素算，省掉整窗的 Python 循环。
+    竖着一维采样就够（渐变是低频的），放大后不会出现色阶断层；顶底相差约 30 级，
+    肉眼能看出「一块从上往下变暗的玻璃」。暗角用乘法，不会把颜色推向灰。
     """
-    top, edge = (34, 56, 104), (6, 10, 22)
-    small = Image.new("RGB", (96, 96))
-    put = small.load()
-    for y in range(96):
-        for x in range(96):
-            u = x / 95.0 - 0.22
-            v = y / 95.0 - 0.02
-            dist = min(1.0, math.hypot(u * 1.5, v * 1.25) / 1.15)
-            t = (1.0 - dist) ** 1.8
-            put[x, y] = tuple(int(edge[i] + (top[i] - edge[i]) * t) for i in range(3))
-    return small.resize((max(1, width), max(1, height)), Image.BICUBIC).convert("RGBA")
+    w, h = max(1, int(width)), max(1, int(height))
+    stops = (ui_theme.GLASS_GRAD_TOP, ui_theme.GLASS_GRAD_MID, ui_theme.GLASS_GRAD_BOTTOM)
+    strip = Image.new("RGB", (1, 64))
+    put = strip.load()
+    for row in range(64):
+        t = row / 63.0
+        a, b, u = (stops[0], stops[1], t / 0.5) if t <= 0.5 else (
+            stops[1], stops[2], (t - 0.5) / 0.5)
+        put[0, row] = tuple(int(a[i] + (b[i] - a[i]) * u) for i in range(3))
+    img = strip.resize((w, h), Image.BILINEAR)
+    # 水平暗角：中间亮、两侧暗 12%，让渐变看起来像有个光源，而不是一条灰带
+    ramp = 32
+    vignette = Image.new("L", (ramp, 1))
+    vput = vignette.load()
+    for x in range(ramp):
+        u = abs(x / (ramp - 1) * 2.0 - 1.0)
+        vput[x, 0] = int(round(255 * (1.0 - 0.12 * u * u)))
+    shade = vignette.resize((w, h), Image.BILINEAR)
+    grey = Image.merge("RGB", (shade, shade, shade))
+    return ImageChops.multiply(img, grey).convert("RGBA")
 
 
 def _aurora(width: int, height: int) -> Image.Image:
@@ -354,13 +434,25 @@ class GlassBackdrop(ctk.CTkCanvas):
             return {}
 
     def _compose_panels(self, img: Image.Image, panels, scale: float) -> dict[str, str]:
+        """三层合成：柔影（下移后模糊）→ 近实心卡面 + 亮边 → 上沿内高光。
+
+        卡面按 CARD_FILL_ALPHA(240/255≈0.94) 合成在渐变之上：桌面内容根本进不来（整窗
+        alpha=1.0），但衬底渐变还透着 6%，所以它看起来仍是「一块有厚度的玻璃」而不是
+        一块纯色塑料。高光必须单独一层再叠上去 —— 画进同一层会把卡面像素换成半透明色，
+        那是一条暗缝，不是高光。
+        """
         w, h = img.size
         shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         glass = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        sd, gd = ImageDraw.Draw(shadow), ImageDraw.Draw(glass)
+        shine = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        sd, gd, hd = ImageDraw.Draw(shadow), ImageDraw.Draw(glass), ImageDraw.Draw(shine)
         card = _rgb(ui_theme.CARD)
+        tint = ui_theme.GLASS_TINT[3] / 255.0
+        face = tuple(int(round(card[i] * (1.0 - tint) + 255 * tint)) for i in range(3))
+        fill = face + (int(ui_theme.CARD_FILL_ALPHA),)
         rim = int(round(ui_theme.PANEL_RIM * scale))
         edge = max(1, int(round(scale)))
+        drop = int(round(ui_theme.GLASS_SHADOW_OFFSET * scale))
         boxes = []
         for key, kind, x, y, pw, ph, radius in panels:
             box = (x * scale, y * scale, (x + pw) * scale, (y + ph) * scale)
@@ -371,18 +463,21 @@ class GlassBackdrop(ctk.CTkCanvas):
                 continue
             out = (box[0] - rim, box[1] - rim, box[2] + rim, box[3] + rim)
             r_out = int(round(radius * scale)) + rim
-            sd.rounded_rectangle((out[0] - rim, out[1] - rim, out[2] + rim, out[3] + 2 * rim),
+            # 柔影：整体下移 drop，模糊后只留在卡面之外 —— 光在上方，影在下方
+            sd.rounded_rectangle((out[0] - rim, out[1] - rim + drop,
+                                  out[2] + rim, out[3] + rim + drop),
                                  radius=r_out + rim, fill=ui_theme.GLASS_SHADOW)
-            gd.rounded_rectangle(out, radius=r_out, fill=card + (255,))
+            gd.rounded_rectangle(out, radius=r_out, fill=fill)
             gd.rounded_rectangle(out, radius=r_out, outline=ui_theme.GLASS_EDGE, width=edge)
             # 上沿内高光：玻璃味全靠这一道，宽度只占边框内侧 1~2px
-            gd.rounded_rectangle((out[0] + 2 * rim, out[1] + rim,
+            hd.rounded_rectangle((out[0] + 2 * rim, out[1] + rim,
                                   out[2] - 2 * rim, out[1] + rim + edge * 2),
                                  radius=r_out, fill=ui_theme.GLASS_HIGHLIGHT)
             boxes.append((key, box))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(max(1.0, 3.0 * scale)))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(max(1.0, 4.5 * scale)))
         img.alpha_composite(shadow)
         img.alpha_composite(glass)
+        img.alpha_composite(shine)
         out_colors = {}
         for key, box in boxes:
             cx = int((box[0] + box[2]) / 2)

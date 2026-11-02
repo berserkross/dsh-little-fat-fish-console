@@ -48,6 +48,16 @@ class SizeConstantTests(unittest.TestCase):
         self.assertLessEqual(ui_theme.STATUS_LAMP, 16)
         self.assertGreater(ui_theme.STATUS_BAR_H, ui_theme.STATUS_LAMP * 2)
 
+    def test_empty_log_floor_fits_the_avatar(self):
+        """空态下限要放得下 HERO_SIZE 的圆形头像；有字就回落到 log_rows() 的规则。"""
+        self.assertGreaterEqual(ui_theme.LOG_ROWS_EMPTY, ui_theme.LOG_ROWS_MIN)
+        self.assertLessEqual(ui_theme.LOG_ROWS_EMPTY, ui_theme.LOG_ROWS_MAX)
+        self.assertGreaterEqual(ui_theme.log_rows_with_empty(0, 10 ** 6) * ui_theme.LOG_LINE_PX,
+                                ui_theme.HERO_SIZE)
+        self.assertEqual(ui_theme.log_rows_with_empty(9, 10 ** 6), 9)
+        self.assertEqual(ui_theme.log_rows_with_empty(0, ui_theme.LOG_LINE_PX),
+                         ui_theme.LOG_ROWS_MIN)
+
     def test_log_rows_are_content_driven(self):
         """日志区高度跟着内容长：下限 5~6 行、上限有顶，中间按行数走。"""
         self.assertGreaterEqual(ui_theme.LOG_ROWS_MIN, 5)
@@ -62,10 +72,10 @@ class SizeConstantTests(unittest.TestCase):
         self.assertEqual(ui_theme.log_rows(10 ** 6, ui_theme.LOG_LINE_PX), ui_theme.LOG_ROWS_MIN)
 
     def test_header_and_empty_state_sizes(self):
-        """头部 48~56px 的鲸鱼娘底盘；空态插画要比底盘明显大一号。"""
-        self.assertGreaterEqual(ui_theme.BADGE_SIZE, 48)
-        self.assertLessEqual(ui_theme.BADGE_SIZE, 56)
-        self.assertLessEqual(ui_theme.BADGE_SIZE, ui_theme.HEADER_H)
+        """头部 64px 的 ico 头像；上下各留 ≥8 逻辑像素，圆才不会被父框裁掉。"""
+        self.assertGreaterEqual(ui_theme.BADGE_SIZE, 56)
+        self.assertLessEqual(ui_theme.BADGE_SIZE, 72)
+        self.assertGreaterEqual(ui_theme.HEADER_H - ui_theme.BADGE_SIZE, 16)
         self.assertGreater(ui_theme.HERO_SIZE, ui_theme.BADGE_SIZE * 2)
         self.assertTrue(ui_theme.EMPTY_LOG_HINT.strip())
 
@@ -115,9 +125,20 @@ class GlassTokenTests(unittest.TestCase):
         self.assertLessEqual(ui_theme.STAR_DOT[3], 40)
         self.assertGreater(ui_theme.PANEL_RIM, 0)
 
-    def test_window_alpha_stays_in_the_tested_band(self):
-        self.assertGreaterEqual(ui_theme.WINDOW_ALPHA, 0.94)
-        self.assertLessEqual(ui_theme.WINDOW_ALPHA, 0.97)
+    def test_window_is_fully_opaque(self):
+        """整窗必须 alpha=1.0：玻璃靠画出来的渐变/卡面/亮边/柔影，不靠桌面透射。"""
+        self.assertEqual(ui_theme.WINDOW_ALPHA, 1.0)
+
+    def test_card_fill_is_near_solid(self):
+        """卡面等效不透明度 ≥0.92：桌面字形不能从面板内部透出来。"""
+        self.assertGreaterEqual(ui_theme.CARD_FILL_ALPHA / 255.0, 0.92)
+
+    def test_window_gradient_is_visible(self):
+        """竖向渐变要看得出来，柔影要有偏移，否则「玻璃感」就退回一块纯色。"""
+        top, bottom = ui_theme.GLASS_GRAD_TOP, ui_theme.GLASS_GRAD_BOTTOM
+        self.assertGreater(sum(top) - sum(bottom), 40)
+        self.assertGreater(ui_theme.GLASS_SHADOW_OFFSET, 0)
+        self.assertGreater(ui_theme.GLASS_SHADOW[3], 100)
 
     def test_contrast_ratios_clear_wcag_aa(self):
         """正文类文字 ≥ 4.5:1。改配色先跑这条，观感不许压过可读性。"""
@@ -137,6 +158,90 @@ class GlassTokenTests(unittest.TestCase):
         self.assertAlmostEqual(ui_theme.contrast_ratio("#FFFFFF", "#000000"), 21.0, places=1)
         self.assertAlmostEqual(ui_theme.contrast_ratio("#000000", "#FFFFFF"), 21.0, places=1)
         self.assertAlmostEqual(ui_theme.contrast_ratio("#123456", "#123456"), 1.0, places=2)
+
+
+class GlassRenderTests(unittest.TestCase):
+    """渲染层的行为：白底（=桌面）不许透过卡面，渐变与柔影要真的画出来。"""
+
+    def test_gradient_darkens_downwards(self):
+        from dshconsole import widgets as w
+        img = w._gradient(200, 160)
+        top = sum(img.getpixel((100, 6))[:3])
+        bottom = sum(img.getpixel((100, 154))[:3])
+        self.assertGreater(top - bottom, 30, (top, bottom))
+
+    def test_panel_hides_a_white_substrate(self):
+        """白底垫在卡面后面：卡内像素必须被压暗，不能留白（=桌面内容透出来）。"""
+        from PIL import Image
+        from dshconsole import widgets as w
+        img = Image.new("RGBA", (200, 160), (255, 255, 255, 255))
+        samples = w.GlassBackdrop._compose_panels(
+            None, img, [("p", "panel", 20, 20, 160, 120, 14)], 1.0)
+        px = img.convert("RGB").getpixel((100, 80))
+        self.assertLess(max(px), 120, px)
+        self.assertIn("p", samples)
+        self.assertTrue(samples["p"].startswith("#"), samples["p"])
+
+    def test_shadow_lands_below_the_panel(self):
+        """柔影下移：卡面正下方要比正上方暗（影在下、光在上）。"""
+        from PIL import Image
+        from dshconsole import widgets as w
+        img = Image.new("RGBA", (240, 220), (60, 78, 118, 255))
+        w.GlassBackdrop._compose_panels(None, img,
+                                        [("p", "panel", 40, 50, 160, 100, 14)], 1.0)
+        rgb = img.convert("RGB")
+        below = sum(rgb.getpixel((120, 158))[:3])
+        above = sum(rgb.getpixel((120, 44))[:3])
+        self.assertLess(below, above, (below, above))
+
+
+class AvatarAssetTests(unittest.TestCase):
+    """ico 头像：圆形裁切（圆外透明）+ 窗口图标 ico 优先。"""
+
+    def setUp(self):
+        from dshconsole import widgets as w
+        self.w = w
+        icon = w.resources.icon_path()
+        if icon is None or not icon.is_file():
+            self.skipTest("仓库里没有 .ico")
+        self.icon = icon
+
+    def test_cut_uses_the_documented_circle(self):
+        w = self.w
+        self.assertEqual(w.AVATAR_CENTER, (136, 130))
+        self.assertEqual(w.AVATAR_RADIUS, 112)
+        cut = w.avatar(96)
+        self.assertIsNotNone(cut)
+        self.assertEqual(cut.size, (96, 96))
+        alpha = cut.getchannel("A")
+        # 四个角全透明 = 出血裁切的硬切口没有露出来
+        for corner in ((0, 0), (95, 0), (0, 95), (95, 95)):
+            self.assertEqual(alpha.getpixel(corner), 0, corner)
+        self.assertGreater(alpha.getpixel((48, 48)), 200)
+
+    def test_badge_is_transparent_outside_the_disc(self):
+        img = self.w.badge(96, ui_theme.CARD)
+        self.assertEqual(img.size, (96, 96))
+        self.assertEqual(img.getpixel((0, 0))[3], 0)
+
+    def test_hero_picture_shares_the_avatar(self):
+        img = self.w.hero_picture(140, ui_theme.PANEL_DEEP)
+        self.assertEqual(img.size, (140, 140))
+        self.assertEqual(img.getpixel((0, 0))[3], 0)
+
+    def test_window_icon_prefers_the_ico(self):
+        w = self.w
+        calls = []
+
+        class Win:
+            def iconbitmap(self, *args, **kwargs):
+                calls.append("ico")
+
+            def iconphoto(self, *args, **kwargs):
+                calls.append("png")
+
+        self.assertTrue(w.apply_window_icon(Win()))
+        self.assertEqual(calls[:1], ["ico"], calls)
 
 
 class AssetFallbackTests(unittest.TestCase):
