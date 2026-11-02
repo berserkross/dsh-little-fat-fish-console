@@ -4,7 +4,7 @@
     [switch]$Force,     # 跳过确认
     [switch]$NoPause,   # 结束时不等待按键（自动化用）
 
-    [string]$Harness  = '',    # DSH 安装目录；空则回退 DSH_HOME 父目录/脚本上一级
+    [string]$Harness  = '',    # DSH 安装目录；空则回退 DSH_HOME 父目录，仍为空则报错退出
     [string]$NodeExe  = '',    # node.exe 全路径；空则用 PATH 里的 node
     [string]$BinJs    = '',    # bin.js 全路径；空则由 $Harness 推导
     [string]$DshHome  = '',    # DSH_HOME；空则由 $Harness 推导
@@ -24,7 +24,10 @@ $ErrorActionPreference = 'Stop'
 
 # ---------------- 参数回退（GUI 一律显式传参，这里只兜双击独立运行） ----------------
 if (-not $Harness -and $env:DSH_HOME) { $Harness = Split-Path -Parent $env:DSH_HOME }
-if (-not $Harness) { $Harness = Split-Path -Parent $PSScriptRoot }
+if (-not $Harness) {
+    Write-Host "找不到 DeepSeek Harness：请用 -Harness 指定安装目录，或设置 DSH_HOME 环境变量。" -ForegroundColor Red
+    exit 1
+}
 if (-not $NodeExe -or -not (Test-Path -LiteralPath $NodeExe)) {
     $cmd = Get-Command node.exe -ErrorAction SilentlyContinue
     if ($cmd) { $NodeExe = $cmd.Source }

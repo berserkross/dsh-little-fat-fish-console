@@ -26,7 +26,7 @@ def make_file(root: Path, name: str) -> Path:
     return path
 
 
-class HermeticDetection(unittest.TestCase):
+class HermeticBase(unittest.TestCase):
     """把真实机器上的探测来源全部摘掉，只留 tempfile 里造的结构。"""
 
     def setUp(self) -> None:
@@ -45,6 +45,10 @@ class HermeticDetection(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
+
+
+class HermeticDetection(HermeticBase):
+    """A1 探测顺序、config.json 往返、失效重探、失败返回 None。"""
 
     # ---- A1：探测顺序 ----
     def test_looks_like_harness_requires_bin_js(self) -> None:
@@ -155,6 +159,35 @@ class HermeticDetection(unittest.TestCase):
         self.assertEqual(config.resolve_port("abc", None), config.DEFAULT_PORT)
         self.assertEqual(config.resolve_port(70000, None), config.DEFAULT_PORT)
         self.assertEqual(config.resolve_port(None, None), config.DEFAULT_PORT)
+
+
+class CliParsing(HermeticBase):
+    """--harness / --port 必须真的进到 resolve，而不只是写在文档里。"""
+
+    def test_cli_harness_equals_form_reaches_resolve(self) -> None:
+        harness = make_harness(self.tmp, "cli-harness")
+        parsed_harness, parsed_port = config.parse_cli([f"--harness={harness}"])
+        self.assertEqual(parsed_harness, harness)
+        self.assertIsNone(parsed_port)
+        cfg = config.resolve(explicit_harness=parsed_harness, explicit_port=parsed_port,
+                             path=self.tmp / "absent.json", cwd=self.empty)
+        self.assertEqual(cfg.harness, harness)
+        self.assertIsNotNone(cfg.bin_js)
+
+    def test_cli_port_space_form_reaches_resolve(self) -> None:
+        parsed_harness, parsed_port = config.parse_cli(["--port", "3999"])
+        self.assertIsNone(parsed_harness)
+        self.assertEqual(parsed_port, 3999)
+        cfg = config.resolve(explicit_harness=parsed_harness, explicit_port=parsed_port,
+                             path=self.tmp / "absent.json", cwd=self.empty)
+        self.assertEqual(cfg.port, 3999)
+
+    def test_cli_rejects_bad_input(self) -> None:
+        cases = [("--port",), ("--port", "abc"), ("--port", "70000"),
+                 ("--harness=",), ("--harnes", "x")]
+        for argv in cases:
+            with self.subTest(argv=argv), self.assertRaises(config.CliError):
+                config.parse_cli(list(argv))
 
 
 if __name__ == "__main__":

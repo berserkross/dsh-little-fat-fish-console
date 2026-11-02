@@ -50,7 +50,12 @@ python .\dsh_gui.py
 
 ```powershell
 python .\dsh_gui.py --harness "D:\apps\deepseek-harness" --port 3080
+python .\dsh_gui.py --harness="D:\apps\deepseek-harness" --port=3080   # 等号写法同样支持
 ```
+
+`--harness` / `--port` **只影响本次运行**，不写入 `config.json`；参数写错（缺值、端口不是
+1-65535 的整数、用了不认识的参数）会打印用法并以退出码 2 结束，不会静默忽略。想让程序长期
+记住，用上面的目录选择框，或直接编辑 `config.json`。
 
 `config.json` 里记录 `harness / node / bin_js / dsh_home / port / chrome / tailscale`；
 任何一条路径失效（目录被删、换了机器）都会被丢弃并重新探测。想换配置位置可设

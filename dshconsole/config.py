@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -321,3 +322,56 @@ def resolve(explicit_harness: object = None, explicit_port: object = None,
             path: str | Path | None = None, cwd: str | Path | None = None) -> DshConfig:
     """便捷入口：一次调用完成全部探测（load()/save() 只管持久化）。"""
     return DshConfig.resolve(explicit_harness, explicit_port, path, cwd)
+
+# ---------------- 命令行参数 ----------------
+CLI_HARNESS = "--harness"
+CLI_PORT = "--port"
+_USAGE = (
+    "用法：dsh_gui.py [--harness <DSH 安装目录>] [--port <1-65535>]\n"
+    "  --harness <目录>  本次运行使用这个 Harness（不写入 config.json）\n"
+    "  --port <端口>     本次运行使用的本机端口（默认 3080）\n"
+    "  也接受 --harness=<目录> / --port=<端口> 写法"
+)
+
+
+class CliError(ValueError):
+    """命令行参数不合法。GUI 捕获后提示并退出，绝不静默忽略。"""
+
+
+def parse_cli(argv: list[str] | None = None) -> tuple[Path | None, int | None]:
+    """解析 --harness / --port，返回 (harness, port)；未指定的项为 None。
+
+    支持 --k v 与 --k=v 两种写法。值缺失 / 端口非法 / 参数不认识一律抛 CliError，
+    因为「静默忽略」会让用户以为参数生效了。
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    harness: Path | None = None
+    port: int | None = None
+    index = 0
+    while index < len(args):
+        name, sep, inline = args[index].partition("=")
+        if name not in (CLI_HARNESS, CLI_PORT):
+            raise CliError(f"不认识的参数：{args[index]}\n{_USAGE}")
+        if sep:
+            value = inline
+        else:
+            if index + 1 >= len(args):
+                raise CliError(f"{name} 后面缺少值\n{_USAGE}")
+            value = args[index + 1]
+            index += 1
+        value = value.strip().strip('"').strip("'")
+        if not value:
+            raise CliError(f"{name} 的值不能为空\n{_USAGE}")
+        if name == CLI_HARNESS:
+            harness = Path(value).expanduser()
+        else:
+            try:
+                number = int(value)
+            except ValueError:
+                raise CliError(f"--port 必须是 1-65535 的整数，收到：{value}") from None
+            if not 0 < number < 65536:
+                raise CliError(f"--port 超出范围（1-65535）：{number}")
+            port = number
+        index += 1
+    return harness, port
+

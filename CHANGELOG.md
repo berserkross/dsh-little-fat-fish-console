@@ -26,6 +26,12 @@ v2 批次 A：可移植性 —— 从「只有作者机器能跑」改成「clon
 
 - 别人 clone 下来后 6/8 个按钮因找不到 ps1 与 harness 而失效。
 - `qrcode` 未列入依赖导致二维码按钮报 ModuleNotFoundError。
+- `--harness` / `--port` 此前只写在文档里、没有代码解析，用户传了也被静默忽略；现已在
+  `dshconsole.config.parse_cli()` 实现，非法参数明确报错并以退出码 2 退出。
+- `launch-dsh.ps1` 在 node 为空时 `Test-Path -LiteralPath ''` 触发参数绑定异常，使「PATH 里的 node」
+  与 codex runtime 两级回退变成死代码；改为 `if (-not $node -or -not (Test-Path ...))`。
+- 两个 ps1 的 `Split-Path -Parent $PSScriptRoot` 回退在移动后指向 `dshconsole/` 而非 harness；
+  改为 DSH_HOME 父目录优先，仍取不到则明确报错并 `exit 1`。
 
 ## [1.0.0] - 2026-11-03
 

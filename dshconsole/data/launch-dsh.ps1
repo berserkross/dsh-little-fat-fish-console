@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Harness = '',   # DSH 安装目录（含 node_modules\@deepseek-ai\dsh）；空则回退 DSH_HOME 父目录/脚本上一级
+    [string]$Harness = '',   # DSH 安装目录（含 node_modules\@deepseek-ai\dsh）；空则回退 DSH_HOME 父目录，仍为空则报错退出
     [string]$NodeExe = '',   # node.exe 全路径；空则用 PATH 里的 node
     [string]$BinJs   = '',   # bin.js 全路径；空则由 $Harness 推导
     [string]$DshHome = '',   # DSH_HOME；空则由 $Harness 推导
@@ -11,15 +11,18 @@ $ErrorActionPreference = 'SilentlyContinue'
 
 # ---------------- 参数回退（GUI 一律显式传参，这里只兜双击独立运行） ----------------
 if (-not $Harness -and $env:DSH_HOME) { $Harness = Split-Path -Parent $env:DSH_HOME }
-if (-not $Harness) { $Harness = Split-Path -Parent $PSScriptRoot }
+if (-not $Harness) {
+    Write-Host "找不到 DeepSeek Harness：请用 -Harness 指定安装目录，或设置 DSH_HOME 环境变量。" -ForegroundColor Red
+    exit 1
+}
 $base = $Harness
 
 $node = $NodeExe
-if (-not (Test-Path -LiteralPath $node)) {
+if (-not $node -or -not (Test-Path -LiteralPath $node)) {
     $cmd = Get-Command node.exe -ErrorAction SilentlyContinue
     if ($cmd) { $node = $cmd.Source }
 }
-if (-not (Test-Path -LiteralPath $node)) {
+if (-not $node -or -not (Test-Path -LiteralPath $node)) {
     $rt = Get-ChildItem -LiteralPath (Join-Path $env:USERPROFILE '.cache\codex-runtimes') -Filter node.exe -Recurse -Depth 4 -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($rt) { $node = $rt.FullName }
 }

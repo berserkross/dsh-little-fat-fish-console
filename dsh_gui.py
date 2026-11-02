@@ -614,11 +614,34 @@ def ensure_ready() -> bool:
     return False
 
 
+def _cli_error(message: str) -> None:
+    """参数不合法：先写 stderr，双击启动（无控制台）时再弹窗，避免静默退出。"""
+    print(message, file=sys.stderr)
+    try:
+        root = ctk.CTk()
+        root.withdraw()
+        try:
+            messagebox.showerror("参数错误", message, parent=root)
+        finally:
+            root.destroy()
+    except Exception:
+        pass
+
+
 def main() -> int:
     if "--selftest" in sys.argv:
         return selftest()
     if "--stop-selftest" in sys.argv:
         return stop_selftest()
+    global CFG, HARNESS, TOKEN_LOG, PORT
+    try:
+        want_harness, want_port = config.parse_cli(sys.argv[1:])
+    except config.CliError as exc:
+        _cli_error(str(exc))
+        return 2
+    if want_harness is not None or want_port is not None:
+        CFG = config.resolve(explicit_harness=want_harness, explicit_port=want_port)
+        HARNESS, TOKEN_LOG, PORT = CFG.harness, CFG.token_log, CFG.port
     if not ensure_ready():
         return 1
     app = ConsoleApp()
