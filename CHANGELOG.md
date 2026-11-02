@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-03
+
+### 界面
+
+- 玻璃不再是「真半透明窗口」，改成画出来的渲染层：整窗竖向渐变（顶 26,40,74 → 底 5,8,18）+ 6% 以内的网格与星点 +
+  卡面等效 0.94 不透明 + 1px 亮边 + 卡面下方柔影；`WINDOW_ALPHA=1.0`，桌面字再也透不过面板。
+- 头部徽章、空态插画、窗口图标统一取自仓库根 `DeepSeekChan [256x256].ico`（圆心 136,130 / 半径 112 圆形遮罩 + LANCZOS，
+  窗口图标改为 ico 优先、PNG 回退）。
+- 常驻日志区高 = `clamp(实际行数, 6, 26) × 行高`，不再吸收剩余高度；空日志走 12 行 + 圆形大图空态。
+- 功能网格三组卡严格等宽、末项通栏、三组同列 chip 右沿对齐（441/442 差异消除）；卡片只由 grid 定位、不参与拉伸。
+- 修窄→宽拖动窗口后组卡被夹扁、13 个芯片整组消失：行权重要按 `GRID_SUBCOLS` 整体重置，不能只配当前行数。
+- 产品名改为「小肥鱼控制台」（窗口标题、单实例守卫、托盘、版本资源同步）。
+
+### 测试
+
+- 新增 `tests/shoot_ui.py` / `tests/verify_shots.py` / `tests/measure_chips.py`：状态截图、截图自检（连抓两张一致 + 白底垫后逐像素）、
+  按钮测量表；`--selftest` marker 追加 `rows/rows_lines/rows_ok/empty_state/glass/fit_full/hero_art/ico/alpha` 字段。
+- 用例 208 → 307。
 ### 新增
 
 - `dshconsole/addresses.py`：手机可达候选 `mobile_candidates()` / `primary_mobile()`，按

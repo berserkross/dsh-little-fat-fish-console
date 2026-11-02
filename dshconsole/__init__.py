@@ -7,6 +7,6 @@ from .config import DshConfig, config_path, load, save
 
 # 版本号源头是 version_info.txt（PyInstaller 的 PE 版本资源）；改版本时两处一起改，
 # diagnostics 的 meta.json 从这里取值。
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 __all__ = ["DshConfig", "config_path", "load", "save", "resources", "__version__"]
