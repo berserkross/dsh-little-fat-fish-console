@@ -1,8 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 # 需要把 dshconsole/data 下的 ps1 与图标一起打进产物：
-#   pyinstaller DSHConsole.spec
-# 产物名与实物一致：DSH 控制台.exe
+#   py -3.11 -m PyInstaller --noconfirm DSHConsole.spec
+# 产物：dist\DSHConsole.exe（ASCII 文件名，便于命令行、CI 与签名脚本引用无空格路径；
+# 中文产品名由 version_info.txt 的 ProductName / FileDescription 与窗口标题体现）。
 
 a = Analysis(
     ['dsh_gui.py'],
@@ -30,7 +31,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='DSH 控制台',
+    name='DSHConsole',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -44,4 +45,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['DeepSeekChan [256x256].ico'],
+    version='version_info.txt',
 )

@@ -2,7 +2,10 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [2.0.0] - 2026-11-03
+
+首个「可发布」版本，四批合成：A 可移植性 → B1/B2 正确性与可观测性 → C 体验层 → E 可发布构建。
+下面按批次记录细节；E 的产物事实（版本、大小、SHA256、签名方案）见 `docs/build-and-signing.md`。
 
 v2 批次 A：可移植性 —— 从「只有作者机器能跑」改成「clone → 装依赖 → 全部按钮可用」。
 
@@ -154,6 +157,43 @@ v2 批次 C：体验层 —— 托盘常驻、跟随真实日志、脱敏诊断�
   bbox），`token_url()` 又在主线程读日志跑正则、和探测线程抢 GIL。改成 `yview_moveto(1.0)`、
   token 在后台线程算、多行说明合成一次 insert 之后，刷新期间注入的 Tk 回调中位数 31 毫秒、
   最坏 48 毫秒（改前主线程被整个冻结 14 秒）。
+
+v2 批次 E：可发布构建 —— 产物终于带版本信息，打包口径从「计划」变成「实测」。
+
+### 新增
+
+- `version_info.txt`：PyInstaller 的 `VSVersionInfo` 文本表示，是版本号的**唯一**源头 ——
+  `filevers` / `prodvers` 均为 `(2, 0, 0, 0)`、`CompanyName` 为 `berserkross`、
+  `FileDescription` 与 `ProductName` 为「DSH 控制台（小肥鱼控制台）」、`LegalCopyright` 为 MIT 版权、
+  `Comments` 写仓库地址；字符串表用 `080404B0`（zh-CN + 码页 1200），中文不会乱码。
+- `dshconsole.__version__ = "2.0.0"`：诊断包 `meta.json` 的 `version` 字段此前永远读到 `"unknown"`。
+
+### 变更
+
+- `DSHConsole.spec`：新增 `version='version_info.txt'`；`name` 由 `DSH 控制台` 改为 `DSHConsole`
+  —— ASCII 文件名在命令行 / CI / 签名脚本里不用带引号、不受代码页影响，中文产品名改由 PE 版本资源与
+  窗口标题体现；`upx=False`、`console=False` 保持显式。
+- `.github/workflows/check.yml`：新增「打包 + 版本资源校验」步骤 —— 真跑一遍 PyInstaller 打包，断言产物
+  存在且 `FileVersion` / `ProductVersion` / `CompanyName` / `ProductName` 非空。理由是这四项正是此前
+  **静默**失效的环节：spec 少一个 `version=` 参数，构建照样成功、产物照样能跑，只是没有版本信息。
+
+### 修复
+
+- 产物没有 `FileVersion` / `ProductVersion` / `ProductName`：`.rsrc` 里只有图标与 manifest（71,912 B）；
+  加上版本资源后 72,896 B（+984 B），`GetVersionInfo` 五项均非空。
+- 诊断包的 `version` 字段恒为 `"unknown"`（包上没有 `__version__`，`diagnostics._version()` 走 fallback）。
+
+### 验收（实测）
+
+- `python -m unittest discover -s tests`（3.14.7）与 `py -3.11 -m unittest discover -s tests`（3.11.9）：
+  189 个用例全绿。
+- `py -3.11 -m PyInstaller --noconfirm DSHConsole.spec`：退出码 0，干净重建 20.7 秒，产物
+  `dist\DSHConsole.exe` 32,151,698 B，SHA256 `04700552D6835F521634D4B4531B409DC69AF925CC14152C03318FD05E5E85FD`。
+- 冻结态 `--selftest` / `--stop-selftest`：退出码都是 0（标记文件里 `qr=True clear=True adopt_shown=True
+  adopt_hidden=True log_lines=2000 trim=True addresses=True`；`fake_alive_after_click=False
+  log_has_stopped=True queue_idle=True`），说明 `_MEIPASS` 下的 ps1 与 ico、pystray、qrcode、PIL 都能起来。
+- 产物未签名：本机 `Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert` 无输出，也没有 `signtool.exe`；
+  SmartScreen 显示「未知发布者」属预期。
 
 ## [1.0.0] - 2026-11-03
 

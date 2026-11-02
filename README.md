@@ -6,8 +6,10 @@
 DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双击 exe 或运行脚本即可打开窗口，
 用来在本机启动 / 停止 DSH Web 服务、把服务临时开给手机访问、以及随时看状态。
 
-> v1 存档版：这是**第一版源码的忠实快照**，上传目的是建立可迭代的基线。
-> 已知的硬编码与待办都列在「v1 已知问题」里，进入 v2 时逐项处理。
+> **当前版本 2.0.0**（2026-11-03）：v1 的硬编码与登录信息泄露已全部修掉，并补齐托盘常驻、日志跟随、
+> 脱敏诊断包、串行命令队列与可发布构建（PE 版本信息 + PyInstaller onefile 打包）。
+> 产物 `dist\DSHConsole.exe` **未签名**，首次运行 Windows 会弹 SmartScreen「未知发布者」，
+> 点「更多信息 → 仍要运行」即可 —— 这是未签名 exe 的预期行为，签名方案见 `docs\build-and-signing.md`。
 
 ## 功能
 
@@ -93,11 +95,24 @@ python .\dsh_gui.py --harness="D:\apps\deepseek-harness" --port=3080   # 等号�
 ## 打包
 
 ```powershell
-python -m pip install "pyinstaller>=6,<7"
-pyinstaller --clean --noconfirm DSHConsole.spec
+py -3.11 -m pip install "pyinstaller>=6,<7"
+py -3.11 -m PyInstaller --noconfirm DSHConsole.spec
 ```
 
-产物在 `dist\` 下。架构细节见 `docs\build-and-signing.md`。
+产物是 **onefile** 的 `dist\DSHConsole.exe`（2.0.0 实测 32,151,698 B / 30.66 MiB，SHA256 见 Release 说明）。
+PE 版本资源由 `version_info.txt` 提供，资源管理器「属性 → 详细信息」能看到 `FileVersion 2.0.0.0`、
+`ProductName DSH 控制台（小肥鱼控制台）`、`CompanyName berserkross`。
+本机实测：Python 3.11.9 + PyInstaller 6.22.3，干净构建约 21 秒。
+
+验证产物（exe 是 GUI 子系统，控制台看不到它的 `print`，所以用 `Start-Process` 拿退出码）：
+
+```powershell
+(Get-Item dist\DSHConsole.exe).VersionInfo | Format-List FileVersion, ProductVersion, CompanyName
+$p = Start-Process dist\DSHConsole.exe -ArgumentList '--selftest' -Wait -PassThru; $p.ExitCode
+```
+
+`build\`、`dist\` 与 `*.exe` 已在 `.gitignore` 里，产物不入库。签名方案（有证书 / 自签名 / 不签）
+见 `docs\build-and-signing.md`。
 
 ## 目录结构
 
@@ -123,9 +138,10 @@ dshconsole/data/switch-dsh-web.ps1  手机访问切换器（参数化，随包�
 tests/                           config / probe / psrun / status / redact / errors / single / adopt /
                                  logtail / tasks / snapshot / addresses / diagnostics / tray / GUI hooks
 requirements.txt                 运行依赖
-DSHConsole.spec                  PyInstaller 打包描述
+DSHConsole.spec                  PyInstaller 打包描述（onefile、console=False、version=）
+version_info.txt                 PE 版本资源的唯一源头（版本号只在这里定义）
 DeepSeekChan [256x256].ico       窗口与 exe 图标
-docs/build-and-signing.md        构建、加版本信息、签名交接单
+docs/build-and-signing.md        实测构建记录、版本信息与签名方案
 .github/workflows/check.yml      CI：依赖安装 + 语法检查 + 单元测试
 LICENSE                          MIT 许可证
 SECURITY.md                      漏洞上报方式与预期行为
@@ -140,7 +156,7 @@ python dsh_gui.py --selftest        # 主窗口 + 采纳按钮的自检
 python dsh_gui.py --stop-selftest   # 「停止」整条链路（假进程 + 注入端口探测）
 ```
 
-共 186 个用例。测试只用标准库，用 `tempfile` 造假目录树，不依赖本机任何真实安装路径；两个自检
+共 189 个用例。测试只用标准库，用 `tempfile` 造假目录树，不依赖本机任何真实安装路径；两个自检
 同样把进程与端口探测全部注入（不碰真实 DSH 进程、也不要求 3080 空闲），所以在 CI 上可跑。
 GUI 用例需要 `customtkinter` / `pillow` / `qrcode`，没装时会跳过；托盘用例用假 pystray，
 不需要真的托盘环境。
@@ -155,13 +171,19 @@ v1 的硬编码已在 v2「批次 A（可移植性）」修掉：
 | 依赖 Harness 目录下两份外部 ps1 | 脚本移入本仓库 `dshconsole/data/`，随包发布；`resources.py` 负责定位 |
 | 端口 3080 / 令牌日志路径写死 | 端口来自 `--port` / `config.json`（默认 3080），令牌日志由 harness 目录推导 |
 | `qrcode` 未列入依赖 | 已进 `requirements.txt` |
-| spec 里 `name='DSHConsole'` 与实物不一致 | 已改为 `DSH 控制台`，并显式 `upx=False` |
+| spec 里 `name='DSHConsole'` 与实物不一致 | 已统一为 `DSHConsole`（ASCII 文件名，免去命令行与 CI 的引号/代码页问题），显式 `upx=False` |
 
 批次 C（体验层）也已完成：托盘常驻、日志跟随、脱敏诊断包、地址下拉、命令队列，以及把一次状态
 刷新从 14.4 秒压到 2.1 秒（一次 PowerShell 调用替代七次独立 spawn）。
 
-仍未做（后续批次）：产物没有 `version=` 版本信息（FileVersion / ProductName）、产物未签名
-（SmartScreen 显示「未知发布者」）；界面信息架构与视觉重排属批次 D。
+批次 E（可发布构建）已完成：`version_info.txt` 给产物加上 PE 版本资源（`FileVersion 2.0.0.0`、
+`ProductName DSH 控制台（小肥鱼控制台）`、`CompanyName berserkross`、MIT 版权与仓库地址），
+spec 补 `version='version_info.txt'` 并把产物名统一为 `DSHConsole.exe`；冻结态两条自检
+（`--selftest` / `--stop-selftest`）退出码均为 0，`.rsrc` 由 71,912 B 增至 72,896 B。
+
+仍未做：**产物未签名** —— 本机没有代码签名证书（`Cert:\CurrentUser\My -CodeSigningCert` 为空），
+所以别人第一次运行会看到 SmartScreen「未知发布者」；签名路径见 `docs\build-and-signing.md`。
+界面信息架构与视觉重排属批次 D。
 
 ## 安全提示
 

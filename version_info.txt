@@ -1,0 +1,32 @@
+# -*- coding: utf-8 -*-
+# PyInstaller 的 PE 版本资源（VSVersionInfo 文本表示，由 PyInstaller 用 eval() 加载）。
+# 版本号只在这里定义一处；改动时同步 dshconsole/__init__.py 的 __version__ 与 CHANGELOG.md。
+
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(2, 0, 0, 0),
+    prodvers=(2, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0),
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('080404B0', [
+        StringStruct('CompanyName', 'berserkross'),
+        StringStruct('FileDescription', 'DSH 控制台（小肥鱼控制台）'),
+        StringStruct('FileVersion', '2.0.0.0'),
+        StringStruct('InternalName', 'DSHConsole'),
+        StringStruct('LegalCopyright', 'MIT License · Copyright (c) 2026 YANG TIANRUI'),
+        StringStruct('OriginalFilename', 'DSHConsole.exe'),
+        StringStruct('ProductName', 'DSH 控制台（小肥鱼控制台）'),
+        StringStruct('ProductVersion', '2.0.0.0'),
+        StringStruct('Comments', 'https://github.com/berserkross/dsh-little-fat-fish-console'),
+      ]),
+    ]),
+    VarFileInfo([VarStruct('Translation', [2052, 1200])]),
+  ],
+)

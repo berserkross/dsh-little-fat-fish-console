@@ -35,3 +35,15 @@ jobs:
           python dsh_gui.py --stop-selftest
       - name: Unit tests
         run: python -m unittest discover -s tests -v
+      # 打包校验：spec 少一个 version= 参数时构建照样成功、产物照样能跑，只是「属性」里没有版本信息 ——
+      # 这个步骤专门盯着这类静默失效。
+      - name: Build onefile exe and check version resource
+        run: |
+          python -m pip install "pyinstaller>=6,<7"
+          pyinstaller --noconfirm DSHConsole.spec
+          $v = (Get-Item dist\DSHConsole.exe).VersionInfo
+          "FileVersion=$($v.FileVersion) ProductVersion=$($v.ProductVersion) CompanyName=$($v.CompanyName) ProductName=$($v.ProductName)"
+          if (-not $v.FileVersion) { throw "FileVersion 为空：version_info.txt 或 spec 里的 version= 没生效" }
+          if (-not $v.ProductVersion) { throw "ProductVersion 为空" }
+          if (-not $v.CompanyName) { throw "CompanyName 为空" }
+          if (-not $v.ProductName) { throw "ProductName 为空" }
