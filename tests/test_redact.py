@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import unittest
-from unittest import mock
 
-from dshconsole import textutil
+from dshconsole import addresses, textutil
 
 NL = chr(10)
 
@@ -76,6 +75,9 @@ class GuiLogTests(unittest.TestCase):
             def log_async(self, text):
                 self.logged.append(text)
 
+            def _current_token(self):
+                return self._token
+
         return Fake()
 
     def test_copy_local_masks_log_but_keeps_full_clipboard(self):
@@ -85,18 +87,30 @@ class GuiLogTests(unittest.TestCase):
         self.assertIn("token=****", app.logged[-1])
         self.assertNotIn("abc123", "".join(app.logged))
 
-    def test_copy_masks_every_phone_address_in_log(self):
+    def test_copy_uses_the_chosen_address_and_masks_the_token(self):
         app = self.make_app()
-        with mock.patch.object(self.gui.probe, "tailscale_ip",
-                               lambda exe, runner=None: ("100.124.206.105", None)), \
-             mock.patch.object(self.gui.probe, "lan_ips",
-                               lambda runner=None: (["10.23.115.16"], None)):
-            self.app_cls.on_copy(app)
-        self.assertEqual(app.clipboard.count("token=abc123"), 2)
-        self.assertIn("100.124.206.105", app.clipboard)
+        chosen = addresses.Address("100.124.206.105", "Tailscale", "tailscale")
+        app._ask_address = lambda title, kinds=None: (chosen, 3080)   # 下拉里选中的那一条
+        self.app_cls.on_copy(app)
+        self.assertEqual(app.clipboard, "http://100.124.206.105:3080/?token=abc123")
         logs = "".join(app.logged)
+        self.assertIn("Tailscale", logs)
+        self.assertIn("token=****", logs)
         self.assertNotIn("abc123", logs)
-        self.assertEqual(logs.count("token=****"), 2)
+
+    def test_copy_honours_the_edited_port(self):
+        app = self.make_app()
+        chosen = addresses.Address("10.23.115.16", "以太网", "lan")
+        app._ask_address = lambda title, kinds=None: (chosen, 3099)
+        self.app_cls.on_copy(app)
+        self.assertEqual(app.clipboard, "http://10.23.115.16:3099/?token=abc123")
+
+    def test_cancelled_chooser_copies_nothing(self):
+        app = self.make_app()
+        app._ask_address = lambda title, kinds=None: None
+        self.app_cls.on_copy(app)
+        self.assertEqual(app.clipboard, "")
+        self.assertEqual(app.logged, [])
 
     def test_stop_refuses_when_pids_are_unknown(self):
         app = self.make_app()
