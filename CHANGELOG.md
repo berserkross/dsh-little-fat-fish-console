@@ -2,6 +2,27 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+v2 批次 E：界面重做（方案 A「无环单列信息流」）—— 用户判定「大环观感极差、主要功能全折叠找不到」，
+推翻批次 D 的「大环 + 抽屉」，改成一条从上到下的信息流，15 项操作全部平铺可见。
+
+### 变更
+
+- 顶部：120px 状态环换成 44px 状态条一行放下——状态灯（10px 实心点 / 启动中半弧 / 未知空心）+ 状态词 + `PID x · 端口 3080（在线）` + 手机访问结论。
+- 主操作行：主按钮保持一颗，文案与配色随五态变化；异常态在右侧固定槽位出现「改为控制运行中的实例（PID x）」条件按钮，位置不随状态跳动。
+- 新增功能网格：按「服务 / 手机访问 / 工具」三组平铺 15 项操作，逻辑宽度 ≥660 三列、≥480 两列、更窄一列自适应；所有按钮文案整行可见，150% DPI 下不撑破。
+- 「⋯」抽屉整块删除：`DrawerMenu`、`_drawer_items`、`_open_drawer`、`_place_drawer`、`_on_drawer_closed`、`_drawer` 全部移除，抽屉里的 12 项操作全部前移到网格。
+- 「启动 DSH」变成常驻按钮后补上线前守卫：端口已在线时只写一行日志并返回，不会重复拉起第二个实例。
+- 日志区从固定行高改成随窗口伸缩的一行：15 行是下限、2000 行截断、打码与跟随链路不变，「展开全屏」仍在。
+- `ui_theme`：围绕新骨架重写色板与尺寸（近黑画布、hairline 描边、单一强调蓝），删除 `RING_SIZE` / `RING_THICKNESS` / `DRAWER_WIDTH` / `DRAWER_ROW_HEIGHT`，新增 `STATUS_LAMP` / `STATUS_BAR_H` / `GRID_BTN_H` / `SLOT_W` 与纯函数 `grid_columns(width)`；`WINDOW_SIZE` 收到 700×640 逻辑像素，150% DPI 下 1050×960 物理像素，能在 1600 高的屏幕上完整落地。
+- `--selftest` 标记：保留原有字段与顺序，新增 `groups / columns / fit / phone_on / toggle_label`；`fit` 改用 `winfo_rooty` 在同一坐标系里换算（原来拿子控件相对坐标比父窗口坐标，恒判 False）。
+- 测试 208 → 221 例：`tests/test_ui_theme.py` 重写（状态灯尺寸、`grid_columns` 断点、环/抽屉常量确实消失、QrOverlay 依赖的 token 仍在），新增 `tests/test_layout.py`（三组 15 项互不重复且全部可调用、手机访问四项在网格里、抽屉已删、启停都在、布局高度预算 ≤900）。
+
+### 移除
+
+- `StatusRing`（107px 大环）与整段抽屉实现；状态灯 `StatusLamp` 接管同一位置。
+
 ## [2.1.0] - 2026-11-03
 
 v2 批次 D：视觉重排（方案 1「大环 + 抽屉」）—— 界面从「八颗按钮 + 常驻二维码」改成「一颗环、一颗主按钮、一个抽屉」。

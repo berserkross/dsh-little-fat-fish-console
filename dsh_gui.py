@@ -25,12 +25,12 @@ from PIL import Image
 from dshconsole import (addresses, adopt, config, diagnostics, errors, logtail, probe,
                         psrun, resources, single, snapshot, status, tasks, textutil, tray,
                         ui_theme, widgets)
-from dshconsole.ui_theme import (AMBER, AMBER_DARK, BG, BORDER, CARD, CARD2, CYAN, DIM, PHASE_WORD,
-                                 DRAWER_WIDTH, FAINT, FONT, GREEN, GREEN_DARK, GREY,
-                                 GREY_DARK, LOG_LINE_PX, LOG_ROWS_COLLAPSED, MONO,
-                                 PHASE_STYLE, PRIMARY, PRIMARY_HOVER, RED, RED_DARK,
-                                 RING_SIZE, SLATE, SLATE_DARK, TEAL, TEAL_DARK, TEXT,
-                                 VIOLET, VIOLET_DARK, WHITE_PANEL)
+from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BG, BORDER, BORDER_STRONG,
+                                 CARD, CARD2, CARD3, CYAN, DIM, FAINT, FONT, GAP, GREEN,
+                                 GRID_BTN_H, GRID_PAD, LOG_LINE_PX, LOG_ROWS_COLLAPSED,
+                                 LOG_TEXT, MONO, PAD, PHASE_STYLE, PHASE_WORD, PRIMARY,
+                                 PRIMARY_HOVER, RED, RED_DARK, SLATE, SLATE_DARK, SLOT_W,
+                                 STATUS_BAR_H, TEXT, WINDOW_MIN, WINDOW_SIZE, grid_columns)
 
 CFG = config.resolve()          # 本机探测结果；缺项为 None，探测失败不抛异常
 HARNESS = CFG.harness
@@ -64,6 +64,34 @@ def primary_action(phase) -> tuple[str, str, str, str]:
     if phase is status.Phase.UNKNOWN:
         return "重新探测", "refresh", SLATE, SLATE_DARK
     return "停止 DSH", "stop", RED, RED_DARK      # 启动中 / 运行中
+
+
+# 功能网格：三组语义分组，组内每项一颗按钮。全部平铺在首屏 —— 没有「⋯ 更多」，
+# 也没有抽屉；用户的原话是「主要功能全折叠了根本找不到」。
+# 顺序按「先做什么」排：服务最常用放第一组，手机访问其次，工具与退出最后。
+ACTION_GROUPS: tuple = (
+    ("服务", (
+        ("启动 DSH", "on_start"),
+        ("停止 DSH", "on_stop"),
+        ("重启 DSH", "on_restart"),
+        ("刷新状态", "on_refresh"),
+        ("切换 Web 端口…", "on_change_port"),
+    )),
+    ("手机访问", (
+        ("手机访问二维码", "on_phone_access"),
+        ("复制手机访问地址", "on_copy"),
+        ("复制本机地址", "on_copy_local"),
+        ("开启手机访问（UAC）", "on_phone_on"),
+        ("恢复本机模式（UAC）", "on_phone_off"),
+    )),
+    ("工具", (
+        ("导出诊断包", "on_export_diag"),
+        ("暂停日志跟随", "on_toggle_log_follow"),
+        ("关闭窗口时：收进托盘", "on_toggle_close_mode"),
+        ("取消排队", "on_cancel_queue"),
+        ("退出程序", "_quit"),
+    )),
+)
 
 
 def _font(size: int, bold: bool = False) -> ctk.CTkFont:
@@ -193,19 +221,19 @@ class ConsoleApp(ctk.CTk):
         super().__init__()
         self.title(APP_TITLE)
         self._set_icon()
-        self.geometry("660x800")
-        self.minsize(620, 720)
+        self.geometry("%dx%d" % WINDOW_SIZE)
+        self.minsize(*WINDOW_MIN)
         self.configure(fg_color=BG)
         self._qr_photo = None
         self._qr_overlay: widgets.QrOverlay | None = None
         self._log_overlay: widgets.LogOverlay | None = None
-        self._drawer: widgets.DrawerMenu | None = None
         self._log_rows = LOG_ROWS_COLLAPSED      # 日志区露几行（要更多走浮层）
-        self._log_follow = True                  # 日志跟随开关，从「⋯」里切
+        self._log_follow = True                  # 日志跟随开关，网格里同一颗按钮切
         self._primary_name = "start"             # 主按钮当前绑的回调名
         self._token: str | None = None
         self._candidates: list[adopt.Candidate] = []   # 端口被占用时查到的别的 DSH 进程
         self._adopt_shown = False
+        self._last_net = ""                     # 上次写进日志的网络行，避免重复刷屏
         self._last_status: status.Status | None = None  # 上次探测结果：刷新时先显示它
         self._last_raw = None                          # 上次的原始探测数据，只给诊断包用
         # 可注入的探测口：自检用替身，不再改写模块全局（B2-3）
@@ -336,12 +364,31 @@ class ConsoleApp(ctk.CTk):
             pass
 
     def _sync_close_hint(self) -> None:
-        """页脚只留一行当前行为（开关本体搬进「⋯」抽屉，底栏不再挤两个控件）。"""
+        """底栏一行当前行为；网格里那颗开关的文案跟着一起变（开关本体在网格里）。"""
         text = "关闭按钮：收进托盘" if self._close_to_tray else "关闭按钮：退出程序"
         try:
             self.lbl_close_hint.configure(text=text)
         except Exception:      # noqa: BLE001 - 控件替身/未建好
             pass
+        self._sync_group_labels()
+
+    def _sync_group_labels(self) -> None:
+        """两颗带状态的开关按钮，文案对齐当前状态（网格里只有它们会变）。"""
+        buttons = getattr(self, "_group_buttons", None) or {}
+        pairs = (
+            ("on_toggle_log_follow",
+             "暂停日志跟随" if self._log_follow else "恢复日志跟随"),
+            ("on_toggle_close_mode",
+             "关闭窗口时：收进托盘" if self._close_to_tray else "关闭窗口时：退出程序"),
+        )
+        for name, text in pairs:
+            button = buttons.get(name)
+            if button is None:
+                continue
+            try:
+                button.configure(text=text)
+            except Exception:      # noqa: BLE001 - 控件替身
+                pass
 
     def on_toggle_close_mode(self) -> None:
         """一键在「关闭收进托盘」与「关闭即退出」之间切换，并写回 config.json。"""
@@ -363,8 +410,8 @@ class ConsoleApp(ctk.CTk):
         self._sync_close_hint()
 
     def _close_overlays(self) -> None:
-        """收起抽屉与浮层，并释放二维码的内存引用（不产生任何文件）。"""
-        for attr in ("_qr_overlay", "_log_overlay", "_drawer"):
+        """收起浮层，并释放二维码的内存引用（不产生任何文件）。"""
+        for attr in ("_qr_overlay", "_log_overlay"):
             layer = getattr(self, attr, None)
             if layer is None:
                 continue
@@ -414,102 +461,155 @@ class ConsoleApp(ctk.CTk):
                 pass
 
     # ---------------- UI ----------------
+    # ---------------- 主界面 ----------------
     def _build(self) -> None:
-        """大环 + 抽屉：一颗状态环、一颗主按钮、其余操作收进「⋯」，日志只露末尾 15 行。"""
-        # --- 头部：鲸鱼娘 + 标题 +「⋯」 ---
-        head = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
-                            border_width=1, border_color=BORDER)
-        head.pack(fill="x", padx=14, pady=(14, 8))
-        mascot = mascot_image()
-        if mascot is not None:
-            ctk.CTkLabel(head, text="", image=ctk.CTkImage(light_image=mascot, dark_image=mascot, size=(56, 56))).pack(side="left", padx=(16, 12), pady=12)
-        title_box = ctk.CTkFrame(head, fg_color="transparent")
-        title_box.pack(side="left", pady=10)
-        ctk.CTkLabel(title_box, text="DeepSeek Harness 控制台", font=_font(17, True),
-                     text_color=TEXT, anchor="w").pack(anchor="w")
-        ctk.CTkLabel(title_box, text="本地入口 · 手机访问管理", font=_font(11),
-                     text_color=DIM, anchor="w").pack(anchor="w")
-        # 抽屉入口：应用内菜单。托盘右键菜单是 Host 语义，两者互不复用。
-        self.btn_menu = ctk.CTkButton(head, text="⋯", width=40, height=34, corner_radius=10,
-                                      fg_color=CARD2, hover_color="#1D2D55", text_color=TEXT,
-                                      font=_font(18, True), cursor="hand2",
-                                      command=self._open_drawer)
-        self.btn_menu.pack(side="right", padx=(8, 16))
+        """无环单列信息流：状态条 → 主操作 → 功能平铺网格 → 常驻日志 → 底栏。
 
-        # --- 状态卡片：状态环 + 右侧文字 ---
-        card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
-                            border_width=1, border_color=BORDER)
-        card.pack(fill="x", padx=14, pady=6)
-        row = ctk.CTkFrame(card, fg_color="transparent")
-        row.pack(fill="x", padx=14, pady=(12, 6))
-        self.ring = widgets.StatusRing(row, bg=CARD)
-        self.ring.pack(side="left")
-        side = ctk.CTkFrame(row, fg_color="transparent")
-        side.pack(side="left", fill="both", expand=True, padx=(16, 0))
-        wrap = 330
-        self.lbl_service = ctk.CTkLabel(side, text="服务状态：--", font=_font(12, True),
-                                        text_color=FAINT, anchor="w", justify="left",
-                                        wraplength=wrap)
-        self.lbl_service.pack(fill="x")
-        self.lbl_phone = ctk.CTkLabel(side, text="手机访问：--", font=_font(12, True),
-                                      text_color=FAINT, anchor="w", justify="left",
-                                      wraplength=wrap)
-        self.lbl_phone.pack(fill="x", pady=(6, 0))
-        self.lbl_net = ctk.CTkLabel(side, text="网络：--", font=_font(11),
-                                    text_color=DIM, anchor="w", justify="left",
-                                    wraplength=wrap)
-        self.lbl_net.pack(fill="x", pady=(6, 0))
-        # 采纳按钮：只有「异常（端口被占用）且查到占用者」时才 pack 出来（见 _sync_adopt_button）
-        self.btn_adopt = ctk.CTkButton(
-            card, text="改为控制运行中的实例", command=self.on_adopt,
-            fg_color=VIOLET, hover_color=VIOLET_DARK, text_color="#FFFFFF",
-            font=_font(12, True), height=36, corner_radius=10, cursor="hand2")
-        # 队列说明：排队/执行中的状态写在这里，按钮本身从不禁用（C5）
-        self.lbl_queue = ctk.CTkLabel(card, text="", font=_font(11), text_color=DIM,
-                                      anchor="w", justify="left")
-        self.lbl_queue.pack(fill="x", padx=14, pady=(0, 10))
+        五块按「眼睛从上到下扫一遍」的顺序排；只有日志区有权拉伸（row 3 加了
+        weight），所以窗口变高是日志变高，功能网格和主操作永远不会被挤掉。
+        没有任何折叠入口：12 项操作全部平铺，首屏就能扫到。
+        """
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(3, weight=1)
+        self._columns = 0
+        self._groups: list = []
+        self._group_buttons: dict = {}
+        self._build_status_bar()
+        self._build_actions()
+        self._build_grid()
+        self._build_log()
+        self._build_foot()
+        self._sync_group_labels()
+        self.bind("<Configure>", self._on_resize)
 
-        # --- 主按钮：只有一颗，文案与颜色随状态换 ---
-        self.btn_primary = ctk.CTkButton(self, text="启动 DSH", command=self._run_primary,
-                                         height=52, corner_radius=12, font=_font(15, True),
+    def _build_status_bar(self) -> None:
+        """一行放完：状态灯 + 状态词 + PID/端口，右端是手机访问的当前模式。"""
+        bar = ctk.CTkFrame(self, fg_color=CARD, corner_radius=10, border_width=1,
+                           border_color=BORDER, height=STATUS_BAR_H)
+        bar.grid(row=0, column=0, sticky="ew", padx=PAD, pady=(PAD, 0))
+        bar.grid_propagate(False)
+        bar.grid_columnconfigure(3, weight=1)      # 弹性空列：把手机访问那块顶到右端
+        self.lamp = widgets.StatusLamp(bar, bg=CARD)
+        self.lamp.grid(row=0, column=0, padx=(12, 7))
+        self.lbl_service = ctk.CTkLabel(bar, text=PHASE_WORD[status.Phase.UNKNOWN],
+                                        font=_font(14, True), text_color=TEXT, anchor="w")
+        self.lbl_service.grid(row=0, column=1, sticky="w")
+        self.lbl_detail = ctk.CTkLabel(bar, text="PID — · 端口 —", font=_mono(12),
+                                       text_color=DIM, anchor="w")
+        self.lbl_detail.grid(row=0, column=2, sticky="w", padx=(14, 0))
+        self.lbl_phone = ctk.CTkLabel(bar, text="手机访问：—", font=_font(12),
+                                      text_color=FAINT, anchor="e")
+        self.lbl_phone.grid(row=0, column=4, sticky="e", padx=(12, 14))
+        self.lamp.set_status(status.Phase.UNKNOWN)
+
+    def _build_actions(self) -> None:
+        """主操作行：左边一颗主按钮，右边一格宽度固定的条件槽。"""
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.grid(row=1, column=0, sticky="ew", padx=PAD, pady=(GAP, 0))
+        row.grid_columnconfigure(0, weight=1)
+        self.btn_primary = ctk.CTkButton(row, text="启动 DSH", command=self._run_primary,
+                                         height=ACTION_H, corner_radius=8, font=_font(14, True),
                                          fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
                                          text_color="#FFFFFF", cursor="hand2")
-        self.btn_primary.pack(fill="x", padx=14, pady=(8, 4))
+        self.btn_primary.grid(row=0, column=0, sticky="ew")
+        # 条件槽宽度固定：异常时里面长出「改为控制运行中的实例」，正常时留白，
+        # 主按钮的宽度因此不会跟着状态跳来跳去。
+        self._slot = ctk.CTkFrame(row, fg_color="transparent", width=SLOT_W, height=ACTION_H)
+        self._slot.grid(row=0, column=1, sticky="nsew", padx=(GAP, 0))
+        self._slot.grid_propagate(False)
+        self._slot.grid_rowconfigure(0, weight=1)
+        self._slot.grid_columnconfigure(0, weight=1)
+        self.btn_adopt = ctk.CTkButton(
+            self._slot, text="改为控制运行中的实例", command=self.on_adopt,
+            fg_color="transparent", hover_color=CARD3, text_color=TEXT,
+            border_width=1, border_color=BORDER_STRONG, font=_font(12, True),
+            height=ACTION_H, corner_radius=8, cursor="hand2")
 
-        # --- 日志卡片：15 行是下限不是上限，窗口更高就多露几行（行数上限仍由 2000 行裁剪切控制） ---
-        log_card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
-                                border_width=1, border_color=BORDER)
-        log_card.pack(fill="both", expand=True, padx=14, pady=(6, 8))
-        log_head = ctk.CTkFrame(log_card, fg_color="transparent")
-        log_head.pack(fill="x", padx=14, pady=(10, 4))
-        ctk.CTkLabel(log_head, text="运行日志", font=_font(12, True),
-                     text_color=TEXT, anchor="w").pack(side="left")
-        ctk.CTkButton(log_head, text="展开全屏", width=84, height=26, corner_radius=8,
-                      fg_color=CARD2, hover_color="#1D2D55", text_color=TEXT,
-                      font=_font(11), cursor="hand2",
-                      command=self.on_expand_log).pack(side="right")
-        self.lbl_log_hint = ctk.CTkLabel(log_head, text=f"仅显示末尾 {self._log_rows} 行",
-                                         font=_font(11), text_color=FAINT, anchor="e")
+    def _build_grid(self) -> None:
+        """功能平铺网格：三组语义分组，每组一个小标题，每项一颗按钮。"""
+        area = ctk.CTkFrame(self, fg_color="transparent")
+        area.grid(row=2, column=0, sticky="ew", padx=PAD, pady=(GAP, 0))
+        self._grid = area
+        for title, entries in ACTION_GROUPS:
+            card = ctk.CTkFrame(area, fg_color=CARD, corner_radius=10, border_width=1,
+                                border_color=BORDER)
+            ctk.CTkLabel(card, text=title, font=_font(11, True), text_color=FAINT,
+                         anchor="w").pack(fill="x", padx=12, pady=(8, 4))
+            for text, name in entries:
+                button = ctk.CTkButton(card, text=text, height=GRID_BTN_H, corner_radius=7,
+                                       fg_color=CARD2, hover_color=CARD3, text_color=TEXT,
+                                       font=_font(12), anchor="w", cursor="hand2",
+                                       command=getattr(self, name))
+                button.pack(fill="x", padx=8, pady=(0, GRID_PAD))
+                self._group_buttons[name] = button
+            self._groups.append(card)
+
+    def _build_log(self) -> None:
+        """常驻日志：唯一会拉伸的一块，15 行是下限，2000 行是上限。"""
+        card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=10, border_width=1,
+                            border_color=BORDER)
+        card.grid(row=3, column=0, sticky="nsew", padx=PAD, pady=(GAP, 0))
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_rowconfigure(1, weight=1)
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 4))
+        ctk.CTkLabel(head, text="运行日志", font=_font(12, True), text_color=TEXT,
+                     anchor="w").pack(side="left")
+        # 队列的即时说明是标题的注脚，贴着标题放，不单独占一行。
+        self.lbl_queue = ctk.CTkLabel(head, text="", font=_font(11), text_color=DIM, anchor="w")
+        self.lbl_queue.pack(side="left", padx=(10, 0))
+        ctk.CTkButton(head, text="展开全屏", width=76, height=24, corner_radius=7,
+                      fg_color=CARD2, hover_color=CARD3, text_color=DIM, font=_font(11),
+                      cursor="hand2", command=self.on_expand_log).pack(side="right")
+        self.lbl_log_hint = ctk.CTkLabel(
+            head, text=f"末尾 {self._log_rows} 行 · 上限 {MAX_LOG_LINES} 行",
+            font=_font(11), text_color=FAINT, anchor="e")
         self.lbl_log_hint.pack(side="right", padx=(0, 10))
-        self.log = ctk.CTkTextbox(log_card, height=self._log_rows * LOG_LINE_PX,  # 15 行＝下限
-                                  fg_color="#0A1226", text_color="#C7D3EA", font=_mono(12),
-                                  corner_radius=10, border_width=1, border_color=BORDER,
-                                  wrap="word", state="disabled")
-        self.log.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.log = ctk.CTkTextbox(card, height=self._log_rows * LOG_LINE_PX,
+                                  fg_color=BG, text_color=LOG_TEXT, font=_mono(12),
+                                  corner_radius=8, border_width=0, wrap="word",
+                                  state="disabled")
+        self.log.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
 
-        # --- 底栏 ---
+    def _build_foot(self) -> None:
+        """底栏只放两条不会变的字：本机入口 + 关闭按钮的当前行为。"""
         foot = ctk.CTkFrame(self, fg_color="transparent")
-        foot.pack(fill="x", padx=14, pady=(0, 12))
-        ctk.CTkLabel(foot, text=f"本机：http://127.0.0.1:{PORT}", font=_font(11),
-                     text_color=DIM, anchor="w").pack(side="left")
-        # 关闭行为只显示一行字，切换开关在「⋯」里（把用户锁死在托盘里不可接受）
-        self.lbl_close_hint = ctk.CTkLabel(foot, text="", font=_font(11),
-                                           text_color=DIM, anchor="e")
-        self.lbl_close_hint.pack(side="right", padx=(8, 0))
-        ctk.CTkButton(foot, text="复制本机地址", command=self.on_copy_local, width=110,
-                      height=28, corner_radius=8, fg_color=CARD2, hover_color="#1D2D55",
-                      text_color=TEXT, font=_font(11), cursor="hand2").pack(side="right")
+        foot.grid(row=4, column=0, sticky="ew", padx=PAD, pady=(6, PAD))
+        mascot = mascot_image()
+        if mascot is not None:
+            self._mascot = ctk.CTkImage(light_image=mascot, dark_image=mascot, size=(18, 18))
+            ctk.CTkLabel(foot, text="", image=self._mascot).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(foot, text=f"本机 http://127.0.0.1:{PORT}", font=_mono(11),
+                     text_color=FAINT, anchor="w").pack(side="left")
+        self.lbl_close_hint = ctk.CTkLabel(foot, text="", font=_font(11), text_color=FAINT,
+                                           anchor="e")
+        self.lbl_close_hint.pack(side="right")
         self._sync_close_hint()
+
+    def _on_resize(self, event) -> None:
+        """窗口宽度变了就重排列数（列数没变时 _reflow 什么都不做）。"""
+        if event.widget is not self:
+            return
+        self._reflow(event.width)
+
+    def _reflow(self, width_px: int) -> None:
+        """按可用宽度把三组卡片摆成 3 / 2 / 1 列；只动列数与 grid 位置。"""
+        try:
+            scale = self._get_window_scaling() or 1.0
+        except Exception:      # noqa: BLE001 - 控件替身 / 窗口已销毁
+            scale = 1.0
+        columns = grid_columns(width_px / scale)
+        if columns == self._columns:
+            return
+        self._columns = columns
+        for index in range(len(self._groups)):
+            active = index < columns
+            self._grid.grid_columnconfigure(index, weight=1 if active else 0,
+                                            uniform="group" if active else "")
+        for index, card in enumerate(self._groups):
+            row, column = divmod(index, columns)
+            card.grid(row=row, column=column, sticky="nsew",
+                      padx=(0 if column == 0 else 6, 0))
 
     # ---------------- helpers ----------------
     def logline(self, msg: str) -> None:
@@ -663,58 +763,81 @@ class ConsoleApp(ctk.CTk):
         threading.Thread(target=work, daemon=True, name="dsh-refresh").start()
 
     def _show_refreshing(self) -> None:
+        """刷新中：状态词保留，后面挂一句安静的「刷新中」，颜色不跳（避免闪）。"""
         try:
             if self._last_status is None:
-                self.lbl_service.configure(text="⟳  刷新中…", text_color=CYAN)
+                self.lbl_service.configure(text="检测中…", text_color=CYAN)
                 return
             style = PHASE_STYLE[self._last_status.phase]
-            self.lbl_service.configure(
-                text=f"{style.dot}  服务状态：{self._last_status.phase.label}　⟳ 刷新中…",
-                text_color=style.color)
+            self.lbl_service.configure(text=f"{self._last_status.phase.label} · 刷新中…",
+                                       text_color=style.color)
         except Exception:  # noqa: BLE001 - 窗口已销毁
             pass
 
     def _show_refresh_failed(self, why: str) -> None:
         try:
-            self.lbl_service.configure(text=f"？  状态未知：刷新失败（{why[:60]}）",
+            self.lbl_service.configure(text=f"状态未知（刷新失败：{why[:40]}）",
                                        text_color=FAINT)
         except Exception:  # noqa: BLE001
             pass
 
     def _apply_status(self, state: "status.Status", token: "str | None" = None) -> None:
-        """回填一次状态：所有控件改动都压在一次回调里，且每个控件只 configure 一次。
+        """回填一次状态：所有控件改动压在一次回调里，且每个控件只 configure 一次。
 
         这个函数跑在 Tk 主线程上，探测线程还在收尾时会跟它抢 GIL —— 实测空闲时
         一次 ~15 ms，抢 GIL 时一次 Tk 调用就要 20 ms 上下。所以这里的原则是
-        「少调用」：说明文字合成一次 insert，能后台算的（token）都在后台算。
+        「少调用」：能后台算的（token）都在后台算，网络细节只在变化时进日志。
         """
         self._last_status = state
         style = PHASE_STYLE[state.phase]
-        self.lbl_service.configure(
-            text=f"{style.dot}  服务状态：{state.phase.label}", text_color=style.color)
+        self.lbl_service.configure(text=state.phase.label, text_color=style.color)
         self._sync_primary(state.phase)          # 主按钮的文案与颜色跟着状态走
-        ring = getattr(self, "ring", None)
-        if ring is not None:
-            ring.set_status(state.phase, state.pids)   # 环：颜色 + 状态词 + PID
+        lamp = getattr(self, "lamp", None)
+        if lamp is not None:
+            lamp.set_status(state.phase)         # 灯：颜色 + 弧长 + 状态词
+        self._sync_detail(state)
         if state.phone_open is None:
-            phone_text, phone_dot, phone_color = "未知（原因见日志）", "？", FAINT
+            phone_text, phone_color = "手机访问：未知", FAINT
         elif state.phone_open:
-            phone_text, phone_dot, phone_color = "已开启（Tailscale / 局域网可访问）", "●", GREEN
+            phone_text, phone_color = "手机访问：已开启", GREEN
         else:
-            phone_text, phone_dot, phone_color = "本机模式", "○", DIM
-        self.lbl_phone.configure(text=f"{phone_dot}  手机访问：{phone_text}", text_color=phone_color)
-        ts = state.ts_ip or "未知"
-        lans = "、".join(state.lan_ips) if state.lan_ips else "未知"
+            phone_text, phone_color = "手机访问：本机模式", DIM
+        self.lbl_phone.configure(text=phone_text, text_color=phone_color)
         self._token = token if token is not None else token_url()
-        self.lbl_net.configure(
-            text=f"Tailscale：{ts}\n局域网：{lans}\n"
-                 f"Token：{'已获取（点「复制手机地址」发送）' if self._token else '未获取（启动后生成）'}")
         if state.notes:
             stamp = time.strftime("[%H:%M:%S] ")
             self._append_log([stamp + note for note in state.notes])
+        self._log_net_once(state)
         self._candidates = (adopt.from_processes(state.others)
                             if state.phase is status.Phase.DEGRADED else [])
         self._sync_adopt_button()
+
+    def _sync_detail(self, state: "status.Status") -> None:
+        """状态条中段：PID 与端口。数字走等宽字体，刷新时宽度不抖。"""
+        label = getattr(self, "lbl_detail", None)
+        if label is None:            # 控件替身 / 还没建好
+            return
+        pids = "、".join(str(pid) for pid in (state.pids or [])) or "—"
+        port = f"{PORT}（在线）" if state.port_open else f"{PORT}（离线）"
+        try:
+            label.configure(text=f"PID {pids} · 端口 {port}")
+        except Exception:      # noqa: BLE001
+            pass
+
+    def _log_net_once(self, state: "status.Status") -> None:
+        """网络细节（Tailscale / 局域网 / Token）只在变化时写日志。
+
+        它们原来占状态卡三行，现在状态条只留一眼看得到的三个字段；细节不值得
+        常驻占高度，但也不能凭空消失，所以变化时落到日志里。
+        """
+        ts = state.ts_ip or "未知"
+        lans = "、".join(state.lan_ips) if state.lan_ips else "未知"
+        line = (f"网络：Tailscale {ts} · 局域网 {lans} · "
+                f"Token {'已获取' if self._token else '未获取'}")
+        if line == getattr(self, "_last_net", ""):
+            return
+        self._last_net = line
+        self.logline(line)
 
     def _sync_adopt_button(self) -> None:
         """异常（端口被占用）且查到占用者时才摆出采纳按钮；状态一正常就收起。"""
@@ -724,14 +847,14 @@ class ConsoleApp(ctk.CTk):
                 self._adopt_shown = False
             return
         count = len(self._candidates)
-        text = (f"🔧  改为控制运行中的实例（PID {self._candidates[0].pid}）" if count == 1
-                else f"🔧  改为控制运行中的实例（{count} 个候选，点击后选择）")
+        text = (f"改为控制运行中的实例（PID {self._candidates[0].pid}）" if count == 1
+                else f"改为控制运行中的实例（{count} 个候选，点击后选择）")
         self.btn_adopt.configure(text=text)
         if not self._adopt_shown:
-            self.btn_adopt.pack(fill="x", padx=14, pady=(0, 12))
+            self.btn_adopt.pack(fill="both", expand=True)
             self._adopt_shown = True
 
-    # ---------------- 大环 / 抽屉 / 浮层 ----------------
+    # ---------------- 主操作 / 日志 / 浮层 ----------------
     def _run_primary(self) -> None:
         """主按钮：永远调当前状态对应的那颗老回调（不新写业务）。"""
         handler = getattr(self, "on_" + self._primary_name, None)
@@ -750,74 +873,19 @@ class ConsoleApp(ctk.CTk):
         except Exception:      # noqa: BLE001
             pass
 
-    def _drawer_items(self) -> list:
-        """抽屉条目：其余操作都收在这里。托盘右键菜单是 Host 语义，两者不复用。"""
-        follow = "暂停日志跟随" if self._log_follow else "继续日志跟随"
-        mode = "关闭窗口时：退出程序" if self._close_to_tray else "关闭窗口时：收进托盘"
-        try:
-            pending = len(self._queue.pending())
-        except Exception:      # noqa: BLE001
-            pending = 0
-        items = [
-            ("🔄  刷新状态", self.on_refresh),
-            ("♻  重启 DSH", self.on_restart),
-            ("🔢  切换 Web 端口…", self.on_change_port),
-            ("📱  手机访问（二维码）", self.on_phone_access),
-            ("📋  复制手机访问地址", self.on_copy),
-            ("🖥  复制本机地址", self.on_copy_local),
-            ("📶  开启手机访问（需 UAC）", self.on_phone_on),
-            ("🏠  恢复本机模式（需 UAC）", self.on_phone_off),
-            ("🩺  导出诊断包", self.on_export_diag),
-            (f"📜  {follow}", self.on_toggle_log_follow),
-            (f"📌  {mode}", self.on_toggle_close_mode),
-        ]
-        if pending:
-            items.append((f"✖  取消排队（{pending} 个）", self.on_cancel_queue))
-        items.append(("🚪  退出", self._quit))
-        return items
-
-    def _open_drawer(self) -> None:
-        """「⋯」抽屉：每次打开都重建，动态文案（跟随 / 关闭行为 / 队列）才是当下的。"""
-        if self._drawer is not None:
-            self._drawer.close()
-            self._drawer = None
-        try:
-            x = self.btn_menu.winfo_rootx() + self.btn_menu.winfo_width() - DRAWER_WIDTH
-            y = self.btn_menu.winfo_rooty() + self.btn_menu.winfo_height() + 6
-        except Exception:      # noqa: BLE001 - 控件已销毁
-            x = y = 120
-        self._drawer = widgets.DrawerMenu(self, self._drawer_items(), x=x, y=y,
-                                          on_close=self._on_drawer_closed)
-        self._drawer.show()
-        self._place_drawer()
-
-    def _place_drawer(self) -> None:
-        """把抽屉钉在「⋯」右下角：宽度要等窗口画出来才知道（高 DPI 下不等于设计值）。"""
-        menu = self._drawer
-        if menu is None:
-            return
-        try:
-            self.update_idletasks()
-            right = self.btn_menu.winfo_rootx() + self.btn_menu.winfo_width()
-            x = max(self.winfo_rootx() + 6, right - menu.winfo_width())
-            y = self.btn_menu.winfo_rooty() + self.btn_menu.winfo_height() + 6
-            menu.geometry("+%d+%d" % (int(x), int(y)))
-        except Exception:      # noqa: BLE001 - 控件已销毁
-            pass
-
-    def _on_drawer_closed(self) -> None:
-        self._drawer = None
-
     def on_toggle_log_follow(self) -> None:
         """日志跟随开关：关掉只是不再读新行，框里已有的内容照旧留着。"""
         if not self._log_follow:
+            self._log_follow = True
             self._start_log_tail()
-            return
-        tail, self._tail = self._tail, None
-        self._log_follow = False
-        if tail is not None:
-            tail.stop()
-        self.logline("已暂停日志跟随（「⋯」里可以再打开）。")
+            self.logline("已恢复日志跟随。")
+        else:
+            tail, self._tail = self._tail, None
+            self._log_follow = False
+            if tail is not None:
+                tail.stop()
+            self.logline("已暂停日志跟随（再点一次同一颗按钮恢复）。")
+        self._sync_group_labels()
 
     def on_expand_log(self) -> None:
         """全屏看日志：与主框同一份内容，关掉就回到末尾 15 行。"""
@@ -979,6 +1047,11 @@ class ConsoleApp(ctk.CTk):
         self._submit("启动 DeepSeek Harness", self._start)
 
     def _start(self) -> None:
+        # 「启动 DSH」现在是常驻可点的一颗按钮（不再只能从主按钮进去），
+        # 所以这里加一道守卫：端口已经在线就不再加拉一份 DSH。
+        if self._port_open():
+            self.log_async("已经在运行（端口在线），跳过启动，避免起来第二份 DSH。")
+            return
         self.log_async("正在启动 DeepSeek Harness…")
         r = run_ps(LAUNCH_PS1, *_ps_args(include_chrome=True), timeout=90)
         out = (r.stdout or "").strip()
@@ -1276,6 +1349,11 @@ def _running_status(pid: int = 4321) -> "status.Status":
 
 
 def selftest() -> int:
+    """无窗口交互的自检：状态灯 / 主操作 / 功能网格 / 日志 / 浮层 / 布局。
+
+    marker 字段名沿用批次 D 的格式（ring= 现在报的是状态灯的状态词，
+    menu_items= 报的是功能网格里的按钮数），只在其后追加新字段。
+    """
     app = ConsoleApp()
     app._status_provider = _quiet_status      # 自检不依赖本机真实端口与进程
     app._snapshot.invalidate()
@@ -1283,11 +1361,11 @@ def selftest() -> int:
     time.sleep(0.6)
     app.update()
 
-    # 状态环 + 单主按钮：环里必须写着状态词（不能只靠颜色区分），按钮文案跟着变
+    # 状态灯 + 单主按钮：灯旁必须写着状态词（不能只靠颜色区分），按钮文案跟着变
     app._apply_status(_running_status())
     app.update()
     try:
-        ring_text = app.ring.phase_text
+        ring_text = app.lamp.phase_text
     except Exception:      # noqa: BLE001 - 拿不到就直接判失败
         ring_text = ""
     ok_ring = ring_text == PHASE_WORD[status.Phase.RUNNING]
@@ -1308,7 +1386,7 @@ def selftest() -> int:
     app.update()
     ok_adopt_hidden = not app._candidates and not app._adopt_shown
 
-    # 二维码改住浮层：主界面不常驻，弹层关掉就清干净
+    # 二维码住浮层：主界面不常驻，弹层关掉就清干净
     app._token = "selftest-token"    # 必须在最后一次 _apply_status 之后（否则被真 token 覆盖）
     app.on_phone_access()
     app.update()
@@ -1319,16 +1397,34 @@ def selftest() -> int:
     ok_overlay_closed = app._qr_overlay is None and app._log_overlay is None
     ok_clear = app._qr_photo is None
 
-    # 「⋯」抽屉：其余操作都在里面
-    app._open_drawer()
-    app.update()
+    # 功能网格：全部操作平铺可见（没有「⋯」抽屉），每颗按钮都真的接上了回调
     try:
-        menu_items = len(app._drawer.labels())
+        buttons = dict(app._group_buttons)
+        menu_items = len(buttons)
+        texts = [button.cget("text") for button in buttons.values()]
+        ok_menu = (menu_items == sum(len(entries) for _t, entries in ACTION_GROUPS)
+                   and all(texts) and all(button.cget("command")
+                                          for button in buttons.values()))
+        ok_phone_on = "开启手机访问（UAC）" in texts
+        ok_toggle_label = buttons["on_toggle_close_mode"].cget("text").startswith("关闭窗口时：")
     except Exception:      # noqa: BLE001
-        menu_items = -1
-    app._close_overlays()
-    app.update()
-    ok_menu = menu_items >= 11
+        menu_items, ok_menu, ok_phone_on, ok_toggle_label = -1, False, False, False
+    groups = len(getattr(app, "_groups", []))
+
+    # 布局：功能网格必须整块落在日志上方，日志不能被挤没，底栏不能掉出窗口
+    app.update_idletasks()
+    try:
+        columns = app._columns
+        root_y, win_h = app.winfo_rooty(), app.winfo_height()
+        grid_bottom = app._grid.winfo_rooty() + app._grid.winfo_height() - root_y
+        log_top = app.log.winfo_rooty() - root_y
+        foot_bottom = (app.lbl_close_hint.winfo_rooty()
+                       + app.lbl_close_hint.winfo_height() - root_y)
+        # 网格整块在日志上方、网格与底栏都在窗口内、日志没被挤成一条缝
+        ok_fit = (grid_bottom <= log_top and foot_bottom <= win_h
+                  and app.log.winfo_height() >= 3 * LOG_LINE_PX)
+    except Exception:      # noqa: BLE001
+        columns, ok_fit = -1, False
 
     # 日志滚动上限：塞 2100 行后行数必须回到上限以内（C2）
     app._append_log([f"自检第 {i} 行" for i in range(MAX_LOG_LINES + 100)])
@@ -1361,7 +1457,8 @@ def selftest() -> int:
     app.mainloop()
     ok = all([ok_qr, ok_clear, ok_adopt_shown, ok_adopt_hidden, ok_trim, ok_addr,
               ok_ring, ok_primary, ok_primary_deg, ok_menu, ok_overlay_open,
-              ok_overlay_closed, ok_collapsed, log_expanded])
+              ok_overlay_closed, ok_collapsed, log_expanded, ok_phone_on,
+              ok_toggle_label, ok_fit])
     marker = Path(os.environ.get("TEMP", ".")) / "dsh-gui-selftest.txt"
     marker.write_text(
         f"OK {time.strftime('%Y-%m-%d %H:%M:%S')} qr={ok_qr} clear={ok_clear} "
@@ -1369,7 +1466,10 @@ def selftest() -> int:
         f"log_lines={log_lines} trim={ok_trim} addresses={ok_addr} "
         f"ring={ring_text or '无'} menu_items={menu_items} "
         f"overlay_open={ok_overlay_open} overlay_closed={ok_overlay_closed} "
-        f"log_collapsed={log_collapsed} log_expanded={log_expanded}\n", encoding="utf-8")
+        f"log_collapsed={log_collapsed} log_expanded={log_expanded} "
+        f"groups={groups} columns={columns} fit={ok_fit} "
+        f"phone_on={ok_phone_on} toggle_label={ok_toggle_label} "
+        "\n", encoding="utf-8")
     if sys.stdout:
         print(f"SELFTEST {'OK' if ok else 'FAILED'}")
     return 0 if ok else 1

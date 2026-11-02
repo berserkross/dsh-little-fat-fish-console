@@ -40,10 +40,13 @@ class FakeApp:
         self._candidates = []
         self._adopt_shown = False
         self._token = None
+        self._log_follow = True
+        self._close_to_tray = True
         self.refreshed = 0
         self.lbl_service = Widget()
         self.lbl_phone = Widget()
         self.lbl_net = Widget()
+        self.lbl_detail = Widget()
         self.btn_adopt = Widget()
         self.lbl_close_hint = Widget()
         self._queue = tasks.TaskQueue()                      # 真队列：on_change 同步执行
@@ -88,6 +91,15 @@ class FakeApp:
 
     def _pick_candidate(self, cands):
         return dsh_gui.ConsoleApp._pick_candidate(self, cands)
+
+    def _sync_detail(self, state):
+        dsh_gui.ConsoleApp._sync_detail(self, state)
+
+    def _sync_group_labels(self):
+        dsh_gui.ConsoleApp._sync_group_labels(self)
+
+    def _log_net_once(self, state):
+        dsh_gui.ConsoleApp._log_net_once(self, state)
 
 
 def degraded(pid=9856, path=FAKE_BIN_JS):

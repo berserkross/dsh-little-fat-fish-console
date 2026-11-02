@@ -1,11 +1,12 @@
-"""自绘控件（批次 D「大环 + 抽屉」）：五态状态环、⋯抽屉、模态浮层、全屏日志窗。
+"""自绘控件（批次 E「无环单列信息流」）：状态灯、模态浮层、全屏日志窗。
 
-只负责「长什么样 + 怎么关」，不承载业务：抽屉里的每一行、浮层里的每一个动作都由调用方
-dsh_gui 传进来。所有颜色与尺寸取自 ui_theme，改皮肤不必动这里。
+只负责「长什么样 + 怎么关」，不承载业务：浮层里的每一个动作都由调用方 dsh_gui 传进来。
+所有颜色与尺寸取自 ui_theme，改皮肤不必动这里。抽屉菜单已随「大环 + 抽屉」一起删除：
+操作全部平铺在主窗口里，不再有需要展开才知道存在的入口。
 """
 from __future__ import annotations
 
-from typing import Callable, Sequence
+from typing import Callable
 
 import customtkinter as ctk
 
@@ -53,62 +54,53 @@ def snap_to_line(textbox) -> None:
         return
 
 
-class StatusRing(ctk.CTkCanvas):
-    """顶部状态环：Canvas 画弧，环内写状态词 + 小字 PID。
+class StatusLamp(ctk.CTkCanvas):
+    """状态灯：一颗小圆点替代原来的 120px 大环，颜色 + 填充比例表达五态。
 
-    颜色之外必须有文字 —— 灰度截图与色弱用户只能靠那行字分辨五态。
-    尺寸就是设计稿的像素值（120px 环 / 10px 环宽），不再二次缩放：
-    Canvas 本来就不吃 CTk 的几何缩放，字用固定字号，两边比例才稳。
+    读法：实心点＝走满一圈（未运行 / 运行中 / 异常），缺口弧＝还在路上（启动中 / 未知）。
+    灯本身只有颜色和形状，状态词永远并列写在状态条上 —— 灰度截图与色弱用户靠那行字。
+    Canvas 不吃 CTk 的几何缩放，尺寸按设计稿像素给，字与点的比例才稳。
     """
 
-    def __init__(self, master, size: int = ui_theme.RING_SIZE,
-                 thickness: int = ui_theme.RING_THICKNESS, **kwargs) -> None:
+    def __init__(self, master, size: int = ui_theme.STATUS_LAMP, **kwargs) -> None:
         background = kwargs.pop("bg", ui_theme.CARD)
-        super().__init__(master, width=int(size), height=int(size), bg=background,
+        pad = 3
+        box = int(size) + pad * 2
+        super().__init__(master, width=box, height=box, bg=background,
                          highlightthickness=0, bd=0, **kwargs)
-        self._size = int(size)
-        self._thickness = int(thickness)
-        self._font_text = (ui_theme.FONT, 13, "bold")
-        self._font_pid = (ui_theme.MONO, 10)
-        self.phase_text = ""
-        self.pid_text = ""
+        self._box = box
+        self._pad = pad
+        coords = (pad, pad, box - pad, box - pad)
+        self.phase_text = ui_theme.PHASE_WORD[app_status.Phase.UNKNOWN]
         self.color = ui_theme.FAINT
         self.sweep = 0.0
-        self.render(ui_theme.FAINT, 0.0, "", "")
+        self._core = self.create_oval(*coords, outline=ui_theme.FAINT, fill=ui_theme.FAINT)
+        self._arc = self.create_arc(*coords, start=90, extent=-90, style="arc",
+                                    outline=ui_theme.FAINT, width=2)
+        self._hollow = self.create_oval(*coords, outline=ui_theme.FAINT, width=1, fill="")
+        self.render(ui_theme.FAINT, 0.0)
 
-    def render(self, color: str, sweep: float, text: str, pid: str) -> None:
-        """重画一圈：轨道常驻，前程按 sweep 扫过（1.0 走满整圈）。"""
-        self.delete("all")
-        size = self._size
-        thick = self._thickness
-        pad = thick // 2 + 2
-        box = (pad, pad, size - pad, size - pad)
-        center = size // 2
-        self.create_oval(*box, outline=ui_theme.BORDER, width=thick)
+    def render(self, color: str, sweep: float) -> None:
+        """重画一次：走满的实心、没走满的留弧、比例为 0 的只剩一圈空心。"""
         ratio = max(0.0, min(1.0, float(sweep)))
-        if ratio > 0.004:
-            # 封顶 359 度：整圈（360 与 359.9 都会被 Tk 9 归零，画出来什么都没有），
-            # 留下的一度缺口既画出「走满一圈」，又不会让弧消失。
-            self.create_arc(*box, start=90, extent=-359.0 * ratio, style="arc",
-                            outline=color, width=thick)
-        self.create_text(center, center - 11, text=text or "—",
-                         fill=color, font=self._font_text)
-        self.create_text(center, center + 13, text=pid or "",
-                         fill=ui_theme.DIM, font=self._font_pid)
-        self.phase_text = text or ""
-        self.pid_text = pid or ""
+        filled = ratio >= 1.0
+        partial = 0.0 < ratio < 1.0
+        self.itemconfigure(self._core, fill=color, outline=color,
+                           state="normal" if filled else "hidden")
+        # 封顶 359 度：整圈会被 Tk 9 归零，画出来什么都没有。
+        self.itemconfigure(self._arc, outline=color, extent=-359.0 * ratio,
+                           state="normal" if partial else "hidden")
+        self.itemconfigure(self._hollow, outline=color,
+                           state="normal" if not filled and not partial else "hidden")
         self.color = color
         self.sweep = ratio
 
-    def set_status(self, phase, pids: Sequence[int] | None = None) -> None:
-        """按阶段重画；pids 只取第一个做小字（多实例时下面还有采纳按钮）。"""
+    def set_status(self, phase) -> None:
+        """按阶段点亮：颜色与填充比例都取自 PHASE_STYLE。"""
         style = ui_theme.PHASE_STYLE.get(phase) or ui_theme.PHASE_STYLE[app_status.Phase.UNKNOWN]
         word = ui_theme.PHASE_WORD.get(phase) or ui_theme.PHASE_WORD[app_status.Phase.UNKNOWN]
-        first = list(pids or [])
-        pid_text = "PID %d" % first[0] if first else "PID —"
-        self.configure(bg=ui_theme.CARD)
-        self.render(style.color, style.sweep, word, pid_text)
-
+        self.render(style.color, style.sweep)
+        self.phase_text = word
 
 class _PopLayer(ctk.CTkToplevel):
     """浮层共同骨架：无边框、居中、Esc 关闭、点外部关闭、✕ 关闭。
@@ -203,44 +195,6 @@ def overlay_header(layer: _PopLayer, title: str, subtitle: str = "") -> ctk.CTkF
     return body
 
 
-class DrawerMenu(_PopLayer):
-    """右上角「⋯」抽屉：应用内菜单。
-
-    点条目 → 先收起抽屉再执行（命令可能自己弹浮层或退出程序，抽屉不该压在上面）。
-    """
-
-    def __init__(self, master, items: Sequence[MenuItem], *, x: int = 0, y: int = 0,
-                 width: int = ui_theme.DRAWER_WIDTH, on_close=None) -> None:
-        self.items: list[MenuItem] = list(items)
-        height = 24 + ui_theme.DRAWER_ROW_HEIGHT * len(self.items)
-        super().__init__(master, width=width, height=height, on_close=on_close)
-        self.card.configure(corner_radius=10)
-        body = ctk.CTkFrame(self.card, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=8, pady=10)
-        for text, command in self.items:
-            ctk.CTkButton(body, text=text, anchor="w", height=ui_theme.DRAWER_ROW_HEIGHT,
-                          width=width - 20, corner_radius=6, cursor="hand2",
-                          fg_color="transparent", hover_color=ui_theme.CARD2,
-                          text_color=ui_theme.TEXT,
-                          font=ctk.CTkFont(family=ui_theme.FONT, size=12),
-                          command=lambda cmd=command: self._pick(cmd)).pack(fill="x")
-        self._anchor = (int(x), int(y))
-
-    def _center(self) -> tuple[int, int]:
-        return self._anchor
-
-    def _pick(self, command: Callable[[], None]) -> None:
-        self.close()
-        try:
-            command()
-        except Exception:
-            # 菜单项自己的异常交给 Tk 的回调钩子，别在抽屉里吞掉上下文。
-            raise
-
-    def labels(self) -> list[str]:
-        return [text for text, _command in self.items]
-
-
 class QrOverlay(_PopLayer):
     """手机访问浮层：地址下拉 + 二维码 + 复制。关闭后主界面不留二维码。"""
 
@@ -293,7 +247,8 @@ class LogOverlay(_PopLayer):
         body = overlay_header(self, "运行日志", "与主界面同一份内容 · 最多 %d 行" % limit)
         self._limit = int(limit)
         self.textbox = ctk.CTkTextbox(
-            body, fg_color="#0A1226", text_color="#C7D3EA", corner_radius=10,
+            body, fg_color=ui_theme.BG, text_color=ui_theme.LOG_TEXT,
+                      corner_radius=10,
             border_width=1, border_color=ui_theme.BORDER, wrap="word",
             font=ctk.CTkFont(family=ui_theme.MONO, size=12), state="disabled")
         self.textbox.pack(fill="both", expand=True)
