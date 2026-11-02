@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import threading
@@ -22,7 +21,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image
 
-from dshconsole import config, resources
+from dshconsole import config, probe, psrun, resources, status, textutil
 
 CFG = config.resolve()          # 本机探测结果；缺项为 None，探测失败不抛异常
 HARNESS = CFG.harness
@@ -30,8 +29,7 @@ LAUNCH_PS1 = resources.launch_ps1()      # 随包发布的脚本，不再依赖�
 SWITCH_PS1 = resources.switch_ps1()
 TOKEN_LOG = CFG.token_log
 ICON_FILE = resources.icon_path()
-SYSTEM_PS = "powershell.exe"
-CREATE_NO_WINDOW = 0x08000000
+CREATE_NO_WINDOW = 0x08000000      # 自检里伪造进程时别闪出控制台窗口
 PORT = CFG.port
 
 # ---------------- 主题（DeepSeek 蓝） ----------------
@@ -60,6 +58,15 @@ WHITE_PANEL = "#FFFFFF"
 FONT = "Microsoft YaHei UI"
 MONO = "Consolas"
 
+# 阶段 -> (颜色, 圆点)。UNKNOWN 用灰而不是红：查不到不等于未运行。
+_PHASE_STYLE = {
+    status.Phase.RUNNING: (GREEN, "●"),
+    status.Phase.STARTING: (CYAN, "◔"),
+    status.Phase.DEGRADED: (VIOLET, "◐"),
+    status.Phase.STOPPED: (RED, "○"),
+    status.Phase.UNKNOWN: (FAINT, "？"),
+}
+
 
 def _font(size: int, bold: bool = False) -> ctk.CTkFont:
     return ctk.CTkFont(family=FONT, size=size, weight="bold" if bold else "normal")
@@ -87,43 +94,25 @@ def _ps_args(include_chrome: bool = False) -> list[str]:
     return args
 
 
-# ---------------- 工具函数（与旧版一致） ----------------
-def run_ps(script: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [SYSTEM_PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        stdin=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW, timeout=timeout,
-    )
+# ---------------- 探测与 ps 调用（统一走 psrun / probe，失败原因不再被吞） ----------------
+def run_ps(script: Path, *args: str, timeout: int = 60) -> psrun.PsResult:
+    """跑随包发布的 ps1；成功与否看返回对象，不从输出里抠值。"""
+    return psrun.run_ps(script, *args, timeout=timeout)
 
 
-def run_ps_cmd(command: str, timeout: int = 30) -> str:
-    try:
-        out = subprocess.run(
-            [SYSTEM_PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            stdin=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW, timeout=timeout,
-        )
-        return (out.stdout or "") + (out.stderr or "")
-    except Exception as exc:  # noqa: BLE001
-        return f"ERR {exc}"
+def port_open(port: int | None = None) -> bool:
+    return probe.port_open(PORT if port is None else port)
 
 
-def port_open(port: int | None = None, host: str = "127.0.0.1", timeout: float = 0.4) -> bool:
-    port = PORT if port is None else port
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+def dsh_pids() -> tuple[list[int] | None, str | None]:
+    """命令行里带本机 bin.js 的 node 进程；None = 查不到（不是「没在跑」）。"""
+    return probe.dsh_processes(CFG.bin_js)
 
 
-def dsh_node_pids() -> list[int]:
-    out = run_ps_cmd(
-        "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | "
-        "Where-Object { $_.CommandLine -match 'bin\\.js web' } | "
-        "Select-Object -ExpandProperty ProcessId"
-    )
-    return [int(x) for x in re.findall(r"\b\d{2,8}\b", out)]
+def phone_ready() -> tuple[bool | None, str | None]:
+    """手机访问是否真的开启：端口转发指向本机端口 + 防火墙规则都在。"""
+    ok, _targets, notes = status.probe_phone(CFG)
+    return ok, (notes[0] if notes else None)
 
 
 def token_url() -> str | None:
@@ -136,37 +125,6 @@ def token_url() -> str | None:
     m = re.search(rf"dsh web: (http://127\.0\.0\.1:{PORT}/\?token=[A-Za-z0-9_\-]+)", text)
     return m.group(1) if m else None
 
-
-def tailscale_ip() -> str | None:
-    exe = CFG.tailscale
-    if not exe:
-        return None
-    out = run_ps_cmd(f"& '{exe}' ip -4")
-    m = re.search(r"(\d+\.\d+\.\d+\.\d+)", out)
-    return m.group(1) if m else None
-
-
-def lan_ips() -> list[str]:
-    ips: list[str] = []
-    out = run_ps_cmd(
-        "Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -match '^(10|192\\.168|172\\.(1[6-9]|2\\d|3[01]))\\.' -and $_.IPAddress -notmatch '^100\\.' } | "
-        "Select-Object -ExpandProperty IPAddress -Unique"
-    )
-    for ip in re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", out):
-        if ip not in ips and not ip.startswith("127."):
-            ips.append(ip)
-    return ips
-
-
-def portproxy_enabled() -> bool:
-    out = run_ps_cmd("netsh interface portproxy show all")
-    return bool(re.search(rf"\d+\.\d+\.\d+\.\d+\s+{PORT}\s+127\.0\.0\.1\s+{PORT}", out))
-
-
-def firewall_rule() -> bool:
-    rule = f"DSH Web {PORT} access"
-    out = run_ps_cmd(f'netsh advfirewall firewall show rule name="{rule}"')
-    return rule in out
 
 
 def make_qr(url: str):
@@ -347,29 +305,31 @@ class ConsoleApp(ctk.CTk):
         self.clear_qr()  # 刷新即清除旧二维码，避免堆积/残留
         def work() -> None:
             try:
-                open_ = port_open()
-                pids = dsh_node_pids()
-                running = open_ or bool(pids)
-                phone = portproxy_enabled() and firewall_rule()
-                ts = tailscale_ip() or "未检测到"
-                lans = ", ".join(lan_ips()) or "未检测到"
-                token = token_url()
-                self.after(0, lambda: self._apply_status(running, phone, ts, lans, token))
+                state = status.probe_status(CFG)
             except Exception as exc:  # noqa: BLE001
                 self.after(0, self.logline, f"状态刷新失败：{exc}")
+                return
+            self.after(0, self._apply_status, state)
         threading.Thread(target=work, daemon=True).start()
 
-    def _apply_status(self, running: bool, phone: bool, ts: str, lans: str, token: str | None) -> None:
-        self.lbl_service.configure(
-            text=("●  服务状态：运行中" if running else "○  服务状态：未运行"),
-            text_color=(GREEN if running else RED))
-        self.lbl_phone.configure(
-            text=("●  手机访问：已开启（Tailscale / 局域网可访问）" if phone else "○  手机访问：本机模式"),
-            text_color=(GREEN if phone else DIM))
+    def _apply_status(self, state: "status.Status") -> None:
+        color, dot = _PHASE_STYLE[state.phase]
+        self.lbl_service.configure(text=f"{dot}  服务状态：{state.phase.label}", text_color=color)
+        if state.phone_open is None:
+            phone_text, phone_dot, phone_color = "未知（原因见日志）", "？", FAINT
+        elif state.phone_open:
+            phone_text, phone_dot, phone_color = "已开启（Tailscale / 局域网可访问）", "●", GREEN
+        else:
+            phone_text, phone_dot, phone_color = "本机模式", "○", DIM
+        self.lbl_phone.configure(text=f"{phone_dot}  手机访问：{phone_text}", text_color=phone_color)
+        ts = state.ts_ip or "未知"
+        lans = "、".join(state.lan_ips) if state.lan_ips else "未知"
+        self._token = token_url()
         self.lbl_net.configure(
-            text=f"Tailscale：{ts}\n局域网：{lans}\nToken：{'已获取（点「复制手机地址」发送）' if token else '未获取（启动后生成）'}")
-        self._token = token
-
+            text=f"Tailscale：{ts}\n局域网：{lans}\n"
+                 f"Token：{'已获取（点「复制手机地址」发送）' if self._token else '未获取（启动后生成）'}")
+        for note in state.notes:
+            self.logline(note)
     # ---------------- actions ----------------
     def on_start(self) -> None:
         self._thread(self._start)
@@ -383,45 +343,86 @@ class ConsoleApp(ctk.CTk):
         self.log_async("启动完成。")
 
     def on_stop(self) -> None:
-        if not messagebox.askyesno("停止确认", "确定要停止 DeepSeek Harness 吗？\n（当前网页会断开，会话已存档可重开）"):
-            return
-        self._thread(self._stop)
+        """先查出将被结束的 PID 让用户确认，再动手；不确定就一个都不杀。"""
+        self._thread(self._stop_prepare)
 
-    def _stop(self) -> None:
-        pids = dsh_node_pids()
-        if not pids:
-            self.log_async("没有找到正在运行的 DSH 进程。")
+    def _stop_prepare(self) -> None:
+        pids, err = dsh_pids()
+        if pids is None:
+            self.log_async(f"未知：node 进程查不到（{err}），已取消停止，避免误杀。")
+            self._ask_main(messagebox.showerror, "无法停止",
+                           f"查不到正在运行的 node 进程：\n{err}\n\n"
+                           "无法确认哪些进程是 DSH，本次没有结束任何进程。")
             return
+        if not pids:
+            self.log_async("没有找到正在运行的 DSH 进程，未做任何操作。")
+            self._ask_main(messagebox.showinfo, "未在运行", "没有找到正在运行的 DSH 进程。")
+            return
+        listing = "\n".join(f"    PID {pid}" for pid in pids)
+        bin_js = str(CFG.bin_js) if CFG.bin_js else "（未探测到 bin.js）"
+        if not self._ask_main(messagebox.askyesno, "停止确认",
+                              f"将结束以下 node 进程：\n{listing}\n\n"
+                              f"识别依据：命令行里含\n    {bin_js}\n\n"
+                              "当前网页会断开（会话已存档可重开）。继续吗？"):
+            self.log_async("已取消停止，未结束任何进程。")
+            return
+        self.log_async(f"准备结束 PID：{'、'.join(str(p) for p in pids)}")
+        self._stop(pids)
+
+    def _stop(self, pids: list[int]) -> None:
         for pid in pids:
-            out = run_ps_cmd(f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue; 'done'")
-            if "done" in out:
-                self.log_async(f"已发出停止命令：node.exe PID {pid}")
+            result = psrun.run_ps_cmd(
+                f"Stop-Process -Id {int(pid)} -Force -ErrorAction Stop; 'stopped'")
+            if result.ok and "stopped" in result.stdout:
+                self.log_async(f"已结束 node.exe PID {pid}")
             else:
-                self.log_async(f"停止 PID {pid} 失败：{out.strip()[:200]}")
+                self.log_async(f"停止 PID {pid} 失败：{result.why() or result.text.strip()[:200]}")
         for _ in range(20):
             time.sleep(0.3)
             if not port_open():
                 break
         if port_open():
-            left = dsh_node_pids()
-            self.log_async(f"警告：{PORT} 仍在监听，未完全停止（剩余 PID：{left or '未知'}）。")
+            left, err = dsh_pids()
+            if left is None:
+                self.log_async(f"警告：{PORT} 仍在监听，且剩余进程查不到（{err}）。")
+            else:
+                shown = "、".join(str(pid) for pid in left) or "无"
+                self.log_async(f"警告：{PORT} 仍在监听，未完全停止（剩余 PID：{shown}）。")
         else:
             self.log_async("DeepSeek Harness 已停止。")
 
+    def _ask_main(self, fn, *args):
+        """在工作线程里等主线程弹一次对话框（Tk 控件只能主线程碰）。"""
+        box: dict[str, object] = {}
+        done = threading.Event()
+
+        def call() -> None:
+            try:
+                box["value"] = fn(*args)
+            finally:
+                done.set()
+
+        self.after(0, call)
+        done.wait(timeout=120)
+        return box.get("value")
     def on_phone_on(self) -> None:
         self._thread(self._phone_on)
 
     def _phone_on(self) -> None:
         self.log_async("正在开启手机访问（将弹出 UAC 提权窗口，请点“是”并等待）…")
-        r = run_ps(SWITCH_PS1, *_ps_args(), "-NoPause", timeout=90)
-        self.log_async((r.stdout or "").strip()[-400:] or "切换脚本已在后台运行。")
+        result = run_ps(SWITCH_PS1, *_ps_args(), "-NoPause", timeout=90)
+        self.log_async((result.stdout or "").strip()[-400:] or "切换脚本已在后台运行。")
+        warned = False
         for _ in range(40):
             time.sleep(0.5)
-            if portproxy_enabled():
+            ok, why = phone_ready()
+            if ok is True:
                 self.log_async("手机访问已开启。用“复制手机地址”把地址发到手机。")
                 return
+            if ok is None and not warned:
+                self.log_async(f"未知：{why}（继续等待）")
+                warned = True
         self.log_async("等待超时：请检查弹窗是否已确认提权。")
-
     def on_phone_off(self) -> None:
         if not messagebox.askyesno("恢复本机", "确定恢复本机模式并关闭手机访问吗？\n（会重启 DSH 服务，当前网页会断开）"):
             return
@@ -437,14 +438,18 @@ class ConsoleApp(ctk.CTk):
         if not token:
             messagebox.showinfo("提示", "还没有可用的 token：请先启动 Harness。")
             return
-        ips = ([tailscale_ip()] if tailscale_ip() else []) + lan_ips()
-        urls = [f"http://{ip}:{PORT}/?token={token.split('token=')[1]}" for ip in ips]
+        ts, _ts_err = probe.tailscale_ip(CFG.tailscale)
+        lans, _lan_err = probe.lan_ips()
+        ips = ([ts] if ts else []) + (lans or [])
+        suffix = token.split("token=")[1] if "token=" in token else token
+        urls = [f"http://{ip}:{PORT}/?token={suffix}" for ip in ips]
         if not urls:
             messagebox.showinfo("提示", "未检测到可用的网络地址。")
             return
         self.clipboard_clear()
-        self.clipboard_append("\n".join(urls))
-        self.logline("手机地址已复制到剪贴板：\n  " + "\n  ".join(urls))
+        self.clipboard_append("\n".join(urls))   # 剪贴板放完整地址：这是功能
+        self.logline("手机地址已复制到剪贴板（日志里 token 已打码）：\n  "
+                     + textutil.redact("\n  ".join(urls)))
 
     def on_copy_local(self) -> None:
         token = getattr(self, "_token", None) or token_url()
@@ -452,15 +457,15 @@ class ConsoleApp(ctk.CTk):
             messagebox.showinfo("提示", "还没有可用的 token：请先启动 Harness。")
             return
         self.clipboard_clear()
-        self.clipboard_append(token)
-        self.logline("本机地址已复制：" + token)
+        self.clipboard_append(token)             # 剪贴板放完整地址
+        self.logline("本机地址已复制：" + textutil.redact(token))
 
     def on_qr_ts(self) -> None:
         token = getattr(self, "_token", None) or token_url()
         if not token:
             messagebox.showinfo("提示", "还没有可用的 token：请先启动 Harness。")
             return
-        ts = tailscale_ip()
+        ts, _err = probe.tailscale_ip(CFG.tailscale)
         if not ts:
             messagebox.showinfo("提示", "未检测到 Tailscale 地址。")
             return
@@ -472,7 +477,8 @@ class ConsoleApp(ctk.CTk):
         if not token:
             messagebox.showinfo("提示", "还没有可用的 token：请先启动 Harness。")
             return
-        lans = lan_ips()
+        lane, _err = probe.lan_ips()
+        lans = lane or []
         if not lans:
             messagebox.showinfo("提示", "未检测到局域网地址。")
             return
@@ -487,7 +493,6 @@ class ConsoleApp(ctk.CTk):
             ip = chosen.strip()
         url = f"http://{ip}:{PORT}/?token={token.split('token=')[1]}"
         self._qr(url, "局域网")
-
     def _qr(self, url: str, label: str) -> None:
         try:
             img = make_qr(url)
@@ -542,10 +547,10 @@ def stop_selftest() -> int:
     lines: list[str] = [f"fake_pid={fake.pid}"]
     try:
         time.sleep(1.2)
-        lines.append(f"detected={dsh_node_pids()}")
-        real_dsh_node_pids = dsh_node_pids
-        # 只杀伪造进程，绝不碰真实 584
-        globals()["dsh_node_pids"] = lambda: [fake.pid]
+        lines.append(f"detected={dsh_pids()}")
+        real_dsh_pids = dsh_pids
+        # 只杀伪造进程，绝不碰真实的 DSH 进程
+        globals()["dsh_pids"] = lambda: ([fake.pid], None)
         tkinter.messagebox.askyesno = lambda *a, **k: True  # type: ignore[assignment]
         app = ConsoleApp()
         app.withdraw()
@@ -564,7 +569,7 @@ def stop_selftest() -> int:
         lines.append(f"log_has_stopped={stopped}")
         lines.append(f"log_snippet={app.log.get('1.0', 'end')[:400]!r}")
         app.destroy()
-        globals()["dsh_node_pids"] = real_dsh_node_pids
+        globals()["dsh_pids"] = real_dsh_pids
         if alive:
             fake.kill()
     finally:
@@ -628,7 +633,17 @@ def _cli_error(message: str) -> None:
         pass
 
 
+def _utf8_stdio() -> None:
+    """把 stdout/stderr 掰成 UTF-8：GBK 代码页下中文会显示成乱码。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass  # 被重定向、已关闭或不是 TextIOWrapper：保持原样
+
+
 def main() -> int:
+    _utf8_stdio()
     if "--selftest" in sys.argv:
         return selftest()
     if "--stop-selftest" in sys.argv:

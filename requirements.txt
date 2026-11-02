@@ -1,7 +1,7 @@
-# 运行依赖（版本不钉死，取满足下限的最新版）
+# Runtime dependencies (lower bounds only; pip installs the newest matching release)
 customtkinter>=5.2.2
 pillow>=10.0.0
 qrcode>=7.4.2
 
-# 开发/打包（可选）
+# Development / packaging (optional)
 # pyinstaller>=6.0
