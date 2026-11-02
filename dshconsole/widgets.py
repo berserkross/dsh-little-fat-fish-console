@@ -32,6 +32,27 @@ def trim_textbox(box, limit: int) -> None:
         return
 
 
+def snap_to_line(textbox) -> None:
+    """把视口上沿对齐到整行，消掉顶部被切一半的那行。
+
+    贴底（yview_moveto(1.0)）只保证最后一行可见，视口高度不是行高整数倍时，
+    顶部那行就会只露下半截——而 index("@0,0") 报的是逻辑行，换行续行看不出错位。
+    这里用内层控件的 dlineinfo 读那行的真实像素位置（y<0 表示行顶在视口之上），
+    再按像素回滚。控件替身没有 _textbox，直接早退。
+    """
+    inner = getattr(textbox, "_textbox", None)
+    if inner is None:
+        return
+    try:
+        info = inner.dlineinfo("@0,0")
+        if not info:
+            return
+        if info[1] < 0:
+            inner.yview_scroll(info[1], "pixels")
+    except Exception:  # noqa: BLE001 - 已销毁 / 控件替身
+        return
+
+
 class StatusRing(ctk.CTkCanvas):
     """顶部状态环：Canvas 画弧，环内写状态词 + 小字 PID。
 
@@ -297,7 +318,14 @@ class LogOverlay(_PopLayer):
             return
 
     def follow(self) -> None:
+        """贴到末尾，再把上沿对齐到行首：只做 yview_moveto(1.0) 会让第一行只露下半截。"""
         try:
             self.textbox.yview_moveto(1.0)
         except Exception:
             return
+        snap_to_line(self.textbox)
+        # 首次显示时行高还没量出来（dlineinfo 返回空），窗口画完再对一次。
+        try:
+            self.textbox.after(80, lambda: snap_to_line(self.textbox))
+        except Exception:  # noqa: BLE001 - 已销毁
+            pass

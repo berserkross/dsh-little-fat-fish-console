@@ -476,10 +476,10 @@ class ConsoleApp(ctk.CTk):
                                          text_color="#FFFFFF", cursor="hand2")
         self.btn_primary.pack(fill="x", padx=14, pady=(8, 4))
 
-        # --- 日志卡片：默认只露末尾 15 行，要更多点「展开全屏」 ---
+        # --- 日志卡片：15 行是下限不是上限，窗口更高就多露几行（行数上限仍由 2000 行裁剪切控制） ---
         log_card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
                                 border_width=1, border_color=BORDER)
-        log_card.pack(fill="x", padx=14, pady=6)
+        log_card.pack(fill="both", expand=True, padx=14, pady=(6, 8))
         log_head = ctk.CTkFrame(log_card, fg_color="transparent")
         log_head.pack(fill="x", padx=14, pady=(10, 4))
         ctk.CTkLabel(log_head, text="运行日志", font=_font(12, True),
@@ -491,14 +491,11 @@ class ConsoleApp(ctk.CTk):
         self.lbl_log_hint = ctk.CTkLabel(log_head, text=f"仅显示末尾 {self._log_rows} 行",
                                          font=_font(11), text_color=FAINT, anchor="e")
         self.lbl_log_hint.pack(side="right", padx=(0, 10))
-        self.log = ctk.CTkTextbox(log_card, height=self._log_rows * LOG_LINE_PX,
+        self.log = ctk.CTkTextbox(log_card, height=self._log_rows * LOG_LINE_PX,  # 15 行＝下限
                                   fg_color="#0A1226", text_color="#C7D3EA", font=_mono(12),
                                   corner_radius=10, border_width=1, border_color=BORDER,
                                   wrap="word", state="disabled")
-        self.log.pack(fill="x", padx=12, pady=(0, 12))
-
-        # 空白留给窗口拉伸：日志区该保持 15 行，不该跟着窗口一起长。
-        ctk.CTkFrame(self, fg_color="transparent").pack(fill="both", expand=True)
+        self.log.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         # --- 底栏 ---
         foot = ctk.CTkFrame(self, fg_color="transparent")
