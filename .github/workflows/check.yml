@@ -15,8 +15,10 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        run: python -m pip install --upgrade pip customtkinter pillow
+        run: python -m pip install --upgrade pip -r requirements.txt
       - name: Syntax check
-        run: python -m py_compile dsh_gui.py
+        run: python -m py_compile dsh_gui.py dshconsole/__init__.py dshconsole/config.py dshconsole/resources.py
       - name: Dependency import check
-        run: python -c "import tkinter, customtkinter, PIL; print('deps ok')"
+        run: python -c "import tkinter, customtkinter, PIL, qrcode; print('deps ok')"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v

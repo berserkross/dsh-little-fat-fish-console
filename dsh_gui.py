@@ -17,19 +17,22 @@ import sys
 import threading
 import time
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 from PIL import Image
 
-HARNESS = Path(r"C:\Users\Ibash\Documents\Codex\apps\deepseek-harness")
-LAUNCH_PS1 = HARNESS / "launch-dsh.ps1"
-SWITCH_PS1 = HARNESS / "switch-dsh-web.ps1"
-TOKEN_LOG = HARNESS / "dsh-web.stdout.log"
-ICON_FILE = "DeepSeekChan [256x256].ico"
+from dshconsole import config, resources
+
+CFG = config.resolve()          # 本机探测结果；缺项为 None，探测失败不抛异常
+HARNESS = CFG.harness
+LAUNCH_PS1 = resources.launch_ps1()      # 随包发布的脚本，不再依赖外部 harness 目录
+SWITCH_PS1 = resources.switch_ps1()
+TOKEN_LOG = CFG.token_log
+ICON_FILE = resources.icon_path()
 SYSTEM_PS = "powershell.exe"
 CREATE_NO_WINDOW = 0x08000000
-PORT = 3080
+PORT = CFG.port
 
 # ---------------- 主题（DeepSeek 蓝） ----------------
 PRIMARY = "#4D6BFE"        # DeepSeek 品牌蓝
@@ -66,6 +69,24 @@ def _mono(size: int) -> ctk.CTkFont:
     return ctk.CTkFont(family=MONO, size=size)
 
 
+def _icon_candidates() -> list[Path]:
+    icon = CFG.icon or ICON_FILE
+    return [icon] if icon else []
+
+
+def _ps_args(include_chrome: bool = False) -> list[str]:
+    """ps1 的值参数一律显式传；缺项不传，由脚本自己回退。"""
+    pairs = [("-Harness", HARNESS), ("-NodeExe", CFG.node), ("-BinJs", CFG.bin_js),
+             ("-DshHome", CFG.dsh_home), ("-Port", PORT)]
+    if include_chrome:
+        pairs.append(("-Chrome", CFG.chrome))
+    args: list[str] = []
+    for flag, value in pairs:
+        if value:
+            args += [flag, str(value)]
+    return args
+
+
 # ---------------- 工具函数（与旧版一致） ----------------
 def run_ps(script: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -87,7 +108,8 @@ def run_ps_cmd(command: str, timeout: int = 30) -> str:
         return f"ERR {exc}"
 
 
-def port_open(port: int = PORT, host: str = "127.0.0.1", timeout: float = 0.4) -> bool:
+def port_open(port: int | None = None, host: str = "127.0.0.1", timeout: float = 0.4) -> bool:
+    port = PORT if port is None else port
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return True
@@ -105,16 +127,21 @@ def dsh_node_pids() -> list[int]:
 
 
 def token_url() -> str | None:
+    if TOKEN_LOG is None:
+        return None
     try:
         text = TOKEN_LOG.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    m = re.search(r"dsh web: (http://127\.0\.0\.1:3080/\?token=[A-Za-z0-9_\-]+)", text)
+    m = re.search(rf"dsh web: (http://127\.0\.0\.1:{PORT}/\?token=[A-Za-z0-9_\-]+)", text)
     return m.group(1) if m else None
 
 
 def tailscale_ip() -> str | None:
-    out = run_ps_cmd("& 'C:\\Program Files\\Tailscale\\tailscale.exe' ip -4")
+    exe = CFG.tailscale
+    if not exe:
+        return None
+    out = run_ps_cmd(f"& '{exe}' ip -4")
     m = re.search(r"(\d+\.\d+\.\d+\.\d+)", out)
     return m.group(1) if m else None
 
@@ -133,12 +160,13 @@ def lan_ips() -> list[str]:
 
 def portproxy_enabled() -> bool:
     out = run_ps_cmd("netsh interface portproxy show all")
-    return bool(re.search(r"\d+\.\d+\.\d+\.\d+\s+3080\s+127\.0\.0\.1\s+3080", out))
+    return bool(re.search(rf"\d+\.\d+\.\d+\.\d+\s+{PORT}\s+127\.0\.0\.1\s+{PORT}", out))
 
 
 def firewall_rule() -> bool:
-    out = run_ps_cmd("netsh advfirewall firewall show rule name=\"DSH Web 3080 access\"")
-    return "DSH Web 3080 access" in out
+    rule = f"DSH Web {PORT} access"
+    out = run_ps_cmd(f'netsh advfirewall firewall show rule name="{rule}"')
+    return rule in out
 
 
 def make_qr(url: str):
@@ -153,10 +181,7 @@ def make_qr(url: str):
 
 def mascot_image() -> Image.Image | None:
     """读取 DeepSeek 鲸鱼娘图标（256x256 RGBA，取最大帧）。"""
-    candidates = [
-        Path(getattr(sys, "_MEIPASS", "")) / ICON_FILE,
-        HARNESS / ICON_FILE,
-    ]
+    candidates = _icon_candidates()
     for ico in candidates:
         try:
             if ico.is_file():
@@ -186,6 +211,7 @@ class ConsoleApp(ctk.CTk):
         self._qr_photo = None
         self._token: str | None = None
         self._build()
+        self.logline(f"DSH：{HARNESS or '未检测到'}  ·  端口 {PORT}  ·  node：{CFG.node or '未检测到'}")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(150, self.refresh)
 
@@ -195,10 +221,7 @@ class ConsoleApp(ctk.CTk):
         self.destroy()
 
     def _set_icon(self) -> None:
-        candidates = [
-            Path(getattr(sys, "_MEIPASS", "")) / ICON_FILE,
-            HARNESS / ICON_FILE,
-        ]
+        candidates = _icon_candidates()
         for ico in candidates:
             try:
                 if ico.is_file():
@@ -286,7 +309,7 @@ class ConsoleApp(ctk.CTk):
         # --- 底栏 ---
         foot = ctk.CTkFrame(self, fg_color="transparent")
         foot.pack(fill="x", padx=14, pady=(0, 12))
-        ctk.CTkLabel(foot, text="本机：http://127.0.0.1:3080", font=_font(11),
+        ctk.CTkLabel(foot, text=f"本机：http://127.0.0.1:{PORT}", font=_font(11),
                      text_color=DIM, anchor="w").pack(side="left")
         ctk.CTkButton(foot, text="复制本机地址", command=self.on_copy_local, width=110,
                       height=28, corner_radius=8, fg_color=CARD2, hover_color="#1D2D55",
@@ -353,7 +376,7 @@ class ConsoleApp(ctk.CTk):
 
     def _start(self) -> None:
         self.log_async("正在启动 DeepSeek Harness…")
-        r = run_ps(LAUNCH_PS1, timeout=90)
+        r = run_ps(LAUNCH_PS1, *_ps_args(include_chrome=True), timeout=90)
         out = (r.stdout or "").strip()
         if out:
             self.log_async(out[-300:])
@@ -381,7 +404,7 @@ class ConsoleApp(ctk.CTk):
                 break
         if port_open():
             left = dsh_node_pids()
-            self.log_async(f"警告：3080 仍在监听，未完全停止（剩余 PID：{left or '未知'}）。")
+            self.log_async(f"警告：{PORT} 仍在监听，未完全停止（剩余 PID：{left or '未知'}）。")
         else:
             self.log_async("DeepSeek Harness 已停止。")
 
@@ -390,7 +413,7 @@ class ConsoleApp(ctk.CTk):
 
     def _phone_on(self) -> None:
         self.log_async("正在开启手机访问（将弹出 UAC 提权窗口，请点“是”并等待）…")
-        r = run_ps(SWITCH_PS1, "-NoPause", timeout=90)
+        r = run_ps(SWITCH_PS1, *_ps_args(), "-NoPause", timeout=90)
         self.log_async((r.stdout or "").strip()[-400:] or "切换脚本已在后台运行。")
         for _ in range(40):
             time.sleep(0.5)
@@ -406,7 +429,7 @@ class ConsoleApp(ctk.CTk):
 
     def _phone_off(self) -> None:
         self.log_async("正在恢复本机模式（UAC 提权窗口请点“是”）…")
-        r = run_ps(SWITCH_PS1, "-Restore", "-NoPause", timeout=90)
+        r = run_ps(SWITCH_PS1, *_ps_args(), "-Restore", "-NoPause", timeout=90)
         self.log_async((r.stdout or "").strip()[-300:] or "已提交。")
 
     def on_copy(self) -> None:
@@ -554,11 +577,50 @@ def stop_selftest() -> int:
     return 0
 
 
+def ensure_ready() -> bool:
+    """探测不到 harness/node 时让用户选目录，写进 config.json 再继续。"""
+    global CFG, HARNESS, TOKEN_LOG, PORT
+    if CFG.ready:
+        return True
+    root = ctk.CTk()
+    root.withdraw()
+    chosen = ""
+    try:
+        messagebox.showinfo(
+            "首次运行：DSH 装在哪？",
+            "没有自动找到 DeepSeek Harness（它应含有 node_modules\\@deepseek-ai\\dsh 目录）。\n"
+            "下一步请选择它的安装目录；选好后会记到 config.json，下次不再询问。",
+            parent=root)
+        chosen = filedialog.askdirectory(title="选择 DeepSeek Harness 安装目录", parent=root)
+    finally:
+        root.destroy()
+    if chosen:
+        CFG = config.resolve(explicit_harness=chosen)
+        if CFG.ready:
+            config.save(CFG)
+            HARNESS, TOKEN_LOG, PORT = CFG.harness, CFG.token_log, CFG.port
+            return True
+    root = ctk.CTk()
+    root.withdraw()
+    try:
+        messagebox.showerror(
+            "无法启动",
+            "仍然找不到可用的 DeepSeek Harness，或系统里没有 Node.js。\n"
+            "请先装好 DSH 与 Node.js 再重新打开本程序；\n"
+            "也可以直接编辑 config.json 指定 harness / node 路径。\n\n点「确定」退出。",
+            parent=root)
+    finally:
+        root.destroy()
+    return False
+
+
 def main() -> int:
     if "--selftest" in sys.argv:
         return selftest()
     if "--stop-selftest" in sys.argv:
         return stop_selftest()
+    if not ensure_ready():
+        return 1
     app = ConsoleApp()
     app.mainloop()
     return 0

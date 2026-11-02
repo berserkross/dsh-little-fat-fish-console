@@ -8,9 +8,9 @@
 |---|---|
 | 产物是 PyInstaller onefile（非 Nuitka/非打包器套壳） | 二进制内命中 `PyInstaller`@0x346CF、`MEIPASS`@0x34FCF、`python311`@0x1F37672 |
 | PE 类型 | `machine=0x8664`（x64）、`subsystem=2`（GUI）、7 个段、`.rsrc` 71,912 B |
-| 未启用 UPX | `UPX!` 标记未命中；`upx` 不在 PATH（spec 里 `upx=True` 实际未生效） |
+| 未启用 UPX | `UPX!` 标记未命中；`upx` 不在 PATH（当时 spec 里 `upx=True` 实际未生效；v2 批次 A 已显式改成 `upx=False`） |
 | 版本信息为空的原因 | `DSHConsole.spec` 的 `EXE(...)` 缺 `version=` 参数，`.rsrc` 只有图标 + manifest |
-| 源码与素材齐全 | `dsh_gui.py` 23,536 B、`DeepSeekChan [256x256].ico` 70,384 B、`DSHConsole.spec` 781 B |
+| 源码与素材齐全 | `dsh_gui.py` 23,536 B、`DeepSeekChan [256x256].ico` 70,384 B、`DSHConsole.spec` 781 B（v2 批次 A 起 spec 还带 `dshconsole/data/*.ps1`） |
 | PyInstaller 模块缺失 | `Python311\Scripts\pyinstaller.exe` 是残留 shim，报 `ModuleNotFoundError: No module named 'PyInstaller'` |
 | Python 环境 | `C:\Users\Ibash\AppData\Local\Programs\Python\Python311\python.exe` → 3.11.9 |
 | 无 signtool | `C:\Program Files (x86)\Windows Kits` 只有 8.1 + NETFXSDK，未找到 10 的 signtool.exe |
@@ -46,13 +46,26 @@ VSVersionInfo(
 )
 ```
 
-`DSHConsole.spec` 的 `EXE(...)` 增加两处：
+`name='DSH 控制台'` 与 `upx=False` 已由 v2 批次 A 写进 spec，本步只剩一处新增：
 
 ```python
-    name='DSH 控制台',            # 与实物文件名保持一致
-    upx=False,                   # 显式关闭，避免日后装 upx 触发杀软
     version='version_info.txt',  # 新增
 ```
+
+### 打包必须带上的资源
+
+spec 的 `datas` 已经列出运行期要用的三个文件，缺一个产物就会「按钮点了没反应」：
+
+```python
+    datas=[
+        ('DeepSeekChan [256x256].ico', '.'),
+        ('dshconsole/data/launch-dsh.ps1', 'dshconsole/data'),
+        ('dshconsole/data/switch-dsh-web.ps1', 'dshconsole/data'),
+    ],
+```
+
+运行时由 `dshconsole/resources.py` 定位：源码运行取包目录，`sys.frozen` 时取 `sys._MEIPASS`，
+两条路径都按 `<root>/dshconsole/data` → `<root>/data` 依次尝试。
 
 构建并验收：
 

@@ -1,0 +1,161 @@
+"""dshconsole.config 的单元测试：只用标准库，不依赖本机真实安装路径。"""
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from dshconsole import config
+
+
+def make_harness(root: Path, name: str = "fake-harness") -> Path:
+    """造一个「长得像 harness」的目录：bin.js 存在即成立。"""
+    harness = root / name
+    bin_js = harness / config.BIN_JS_REL
+    bin_js.parent.mkdir(parents=True, exist_ok=True)
+    bin_js.write_text("// stub\n", encoding="utf-8")
+    return harness
+
+
+def make_file(root: Path, name: str) -> Path:
+    path = root / name
+    path.write_text("stub", encoding="utf-8")
+    return path
+
+
+class HermeticDetection(unittest.TestCase):
+    """把真实机器上的探测来源全部摘掉，只留 tempfile 里造的结构。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.empty = self.tmp / "empty"
+        self.empty.mkdir()
+        patchers = [
+            mock.patch.object(config, "harness_from_dsh", return_value=None),
+            mock.patch.object(config, "harness_from_dsh_home", return_value=None),
+            mock.patch.object(config, "common_harness_candidates", return_value=[]),
+        ]
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    # ---- A1：探测顺序 ----
+    def test_looks_like_harness_requires_bin_js(self) -> None:
+        harness = make_harness(self.tmp)
+        self.assertTrue(config.looks_like_harness(harness))
+        self.assertFalse(config.looks_like_harness(self.empty))
+        self.assertFalse(config.looks_like_harness(self.tmp / "nope"))
+
+    def test_explicit_harness_beats_detection(self) -> None:
+        explicit = make_harness(self.tmp, "explicit")
+        stored = make_harness(self.tmp, "stored")
+        self.assertEqual(config.detect_harness(explicit, stored, self.empty), explicit)
+        # 显式目录不存在时退回记录值，而记录值也是 --harness/上次结果
+        self.assertEqual(config.detect_harness(self.tmp / "gone", stored, self.empty), stored)
+
+    def test_harness_from_cwd_walks_up(self) -> None:
+        harness = make_harness(self.tmp)
+        deep = harness / "a" / "b"
+        deep.mkdir(parents=True)
+        self.assertEqual(config.harness_from_cwd(deep), harness)
+
+    def test_detect_harness_returns_none(self) -> None:
+        self.assertIsNone(config.detect_harness(None, None, self.empty))
+        self.assertIsNone(config.detect_harness(self.tmp / "gone", "not-a-dir", self.empty))
+
+    def test_resolve_without_anything_is_not_ready(self) -> None:
+        cfg = config.resolve(path=self.tmp / "absent.json", cwd=self.empty)
+        self.assertIsNone(cfg.harness)
+        self.assertIsNone(cfg.bin_js)
+        self.assertIsNone(cfg.token_log)
+        self.assertFalse(cfg.ready)
+        self.assertEqual(cfg.port, config.DEFAULT_PORT)
+
+    def test_resolve_reports_bin_js_and_token_log(self) -> None:
+        harness = make_harness(self.tmp)
+        node = make_file(self.tmp, "node.exe")
+        cfg_path = self.tmp / "cfg.json"
+        cfg_path.write_text(json.dumps({"node": str(node)}), encoding="utf-8")
+        cfg = config.resolve(explicit_harness=harness, explicit_port=3099,
+                             path=cfg_path, cwd=self.empty)
+        self.assertEqual(cfg.harness, harness)
+        self.assertEqual(cfg.bin_js, harness / config.BIN_JS_REL)
+        self.assertEqual(cfg.node, node)
+        self.assertEqual(cfg.port, 3099)
+        self.assertEqual(cfg.token_log, harness / config.TOKEN_LOG_NAME)
+        self.assertTrue(cfg.ready)
+
+    # ---- A1：config.json 往返 ----
+    def test_save_load_roundtrip(self) -> None:
+        harness = make_harness(self.tmp)
+        node = make_file(self.tmp, "node.exe")
+        dsh_home = self.tmp / "dsh_home"
+        dsh_home.mkdir()
+        cfg = config.DshConfig(harness=harness, node=node, bin_js=harness / config.BIN_JS_REL,
+                               dsh_home=dsh_home, port=3099)
+        target = config.save(cfg, self.tmp / "config.json")
+        self.assertTrue(target.is_file())
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(raw["harness"], str(harness))
+        self.assertEqual(raw["port"], 3099)
+        self.assertNotIn("chrome", raw)  # None 不落盘
+
+        loaded = config.load(target)
+        self.assertEqual(loaded["harness"], str(harness))
+        self.assertEqual(loaded["node"], str(node))
+        self.assertEqual(loaded["bin_js"], str(harness / config.BIN_JS_REL))
+        self.assertEqual(loaded["dsh_home"], str(dsh_home))
+        self.assertEqual(loaded["port"], 3099)
+
+    def test_load_ignores_broken_file(self) -> None:
+        broken = self.tmp / "config.json"
+        broken.write_text("{not json", encoding="utf-8")
+        self.assertEqual(config.load(broken), {})
+        self.assertEqual(config.load(self.tmp / "missing.json"), {})
+
+    def test_config_path_honours_env_override(self) -> None:
+        target = self.tmp / "custom" / "config.json"
+        with mock.patch.dict(os.environ, {config.CONFIG_ENV: str(target)}):
+            self.assertEqual(config.config_path(), target)
+        with mock.patch.dict(os.environ, {config.CONFIG_ENV: ""}):
+            path = config.config_path()
+        self.assertEqual(path.name, "config.json")
+        self.assertEqual(path.parent.name, config.APP_NAME)
+
+    def test_stale_path_is_reprobed(self) -> None:
+        harness = make_harness(self.tmp)
+        node = make_file(self.tmp, "node.exe")
+        target = config.save(config.DshConfig(harness=harness, node=node, port=3099),
+                             self.tmp / "config.json")
+        self.assertIn("harness", config.load(target))
+
+        for root, dirs, files in os.walk(harness, topdown=False):
+            for name in files:
+                Path(root, name).unlink()
+            for name in dirs:
+                Path(root, name).rmdir()
+        harness.rmdir()
+
+        self.assertNotIn("harness", config.load(target))  # 失效键被丢弃
+        cfg = config.resolve(path=target, cwd=self.empty)
+        self.assertIsNone(cfg.harness)   # 于是重新探测（这里探不到）
+        self.assertFalse(cfg.ready)
+        self.assertEqual(cfg.port, 3099)  # 仍然有效的键保留
+
+    def test_resolve_port_validation(self) -> None:
+        self.assertEqual(config.resolve_port(4000, 3080), 4000)
+        self.assertEqual(config.resolve_port(None, 3099), 3099)
+        self.assertEqual(config.resolve_port("abc", None), config.DEFAULT_PORT)
+        self.assertEqual(config.resolve_port(70000, None), config.DEFAULT_PORT)
+        self.assertEqual(config.resolve_port(None, None), config.DEFAULT_PORT)
+
+
+if __name__ == "__main__":
+    unittest.main()
