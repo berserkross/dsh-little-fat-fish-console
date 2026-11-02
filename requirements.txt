@@ -2,6 +2,7 @@
 customtkinter>=5.2.2
 pillow>=10.0.0
 qrcode>=7.4.2
+pystray>=0.19.5      # 系统托盘（C1）；导入失败会自动降级成普通窗口
 
 # Development / packaging (optional)
 # pyinstaller>=6.0
