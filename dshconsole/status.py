@@ -48,6 +48,7 @@ class Status:
     ts_ip: str | None = None
     lan_ips: list[str] | None = None
     notes: list[str] = field(default_factory=list)        # 人话：哪些项没查到、为什么
+    others: list[tuple[int, str]] | None = None            # DEGRADED 时的占用者候选（pid, bin.js）
 
 
 def _points_local(targets: list[tuple[str, int]], port: int) -> bool:
@@ -120,6 +121,7 @@ def probe_status(cfg, *, processes: Callable | None = None, port_open: Callable 
     else:
         phase = Phase.STOPPED
 
+    foreign: list[tuple[int, str]] | None = None
     if phase is Phase.UNKNOWN:
         if pids is None:
             primary.append(f"未知：进程列表查不到（{pids_err}）")
@@ -155,4 +157,5 @@ def probe_status(cfg, *, processes: Callable | None = None, port_open: Callable 
         ts_ip=ts_ip,
         lan_ips=lan_list,
         notes=primary + phone_notes + tail_ips,
+        others=foreign,
     )

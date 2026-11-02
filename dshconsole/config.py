@@ -258,6 +258,9 @@ def load(path: str | Path | None = None) -> dict:
     port = raw.get("port")
     if isinstance(port, int) and 0 < port < 65536:
         data["port"] = port
+    source = raw.get("source")
+    if isinstance(source, str) and source:
+        data["source"] = source
     return data
 
 
@@ -269,6 +272,9 @@ def save(cfg: "DshConfig", path: str | Path | None = None) -> Path:
         value = getattr(cfg, key, None)
         if value:
             data[key] = str(value)
+    source = getattr(cfg, "source", None)
+    if source:
+        data["source"] = str(source)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return target
@@ -287,6 +293,9 @@ class DshConfig:
     chrome: Path | None = None
     tailscale: Path | None = None
     icon: Path | None = None
+    # config.json 的来源标记：adopted = 由「改为控制运行中的实例」写入。只用于交代来龙去脉，
+    # 不参与探测优先级（显式 --harness 仍然优先）。
+    source: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -315,6 +324,7 @@ class DshConfig:
             chrome=detect_chrome(data.get("chrome")),
             tailscale=detect_tailscale(data.get("tailscale")),
             icon=resources.icon_path(),
+            source=data.get("source"),
         )
 
 
