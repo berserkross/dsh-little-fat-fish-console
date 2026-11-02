@@ -11,7 +11,7 @@ try:
 except Exception as exc:  # noqa: BLE001 - 缺 GUI 依赖时跳过
     raise unittest.SkipTest("无法导入 GUI：" + str(exc))
 
-from dshconsole import adopt, status
+from dshconsole import adopt, snapshot, status, tasks
 
 FAKE_BIN_JS = r"C:\自检\node_modules\@deepseek-ai\dsh\lib\bin.js"
 
@@ -37,7 +37,6 @@ class Widget:
 class FakeApp:
     def __init__(self):
         self.logged = []
-        self._busy = False
         self._candidates = []
         self._adopt_shown = False
         self._token = None
@@ -46,9 +45,18 @@ class FakeApp:
         self.lbl_phone = Widget()
         self.lbl_net = Widget()
         self.btn_adopt = Widget()
+        self._queue = tasks.TaskQueue()                      # 真队列：on_change 同步执行
+        self._snapshot = snapshot.Snapshot(lambda: None, ttl=60)
+
+    def _post(self, fn, *args):
+        fn(*args)                # 主线程投递在测试里同步执行
 
     def logline(self, text):
         self.logged.append(text)
+
+    def _append_log(self, lines, prefix="", limit=dsh_gui.MAX_LOG_LINES):
+        for line in lines:
+            self.logged.append(prefix + line)
 
     def log_async(self, text):
         self.logged.append(text)
@@ -59,7 +67,7 @@ class FakeApp:
     def clear_qr(self):
         pass
 
-    def refresh(self):
+    def refresh(self, force=False):
         self.refreshed += 1
 
     def _sync_adopt_button(self):
@@ -173,29 +181,29 @@ class AdoptActionTests(unittest.TestCase):
 class ExceptionVisibilityTests(unittest.TestCase):
     app_cls = dsh_gui.ConsoleApp
 
-    def test_background_failure_logs_traceback_and_releases_busy(self):
+    def test_background_failure_logs_traceback_and_leaves_queue_idle(self):
         app = FakeApp()
-        app._busy = True
 
         def work():
             raise RuntimeError("后台炸了")
 
-        self.app_cls._wrap(app, work)
+        task = self.app_cls._submit(app, "测试任务", work)
+        self.assertTrue(app._queue.wait_idle(5))
         joined = "\n".join(app.logged)
-        self.assertFalse(app._busy)                      # 不会卡在「进行中」
+        self.assertIs(task.state, tasks.State.FAILED)     # 失败有明确状态，不靠全局锁
+        self.assertTrue(app._queue.idle())                # 队列回到空闲：不会有永久禁用的按钮
         self.assertIn("出错：后台炸了", joined)
-        self.assertIn("Traceback", joined)               # 有栈帧摘要，不是只有一句话
-        self.assertEqual(app.refreshed, 1)               # 失败后仍然刷新一次状态
+        self.assertIn("Traceback", joined)                # 有栈帧摘要，不是只有一句话
+        self.assertGreaterEqual(app.refreshed, 1)         # 失败后仍然刷新一次状态
 
-    def test_tk_callback_error_logs_redacted_traceback_and_clears_busy(self):
+    def test_tk_callback_error_logs_redacted_traceback(self):
         app = FakeApp()
-        app._busy = True
         try:
             raise ValueError("回调里炸了 token=abcd1234")
         except ValueError as exc:
             self.app_cls._on_callback_error(app, type(exc), exc, exc.__traceback__)
         joined = "\n".join(app.logged)
-        self.assertFalse(app._busy)
+        self.assertTrue(app._queue.idle())                # 回调炸了也不留任何「进行中」状态
         self.assertIn("界面回调异常", joined)
         self.assertIn("ValueError", joined)
         self.assertNotIn("abcd1234", joined)
@@ -214,6 +222,36 @@ class ExceptionVisibilityTests(unittest.TestCase):
             with redirect_stderr(buffer):     # 日志框坏时退回 stderr，而不是吞掉
                 self.app_cls._on_callback_error(app, type(exc), exc, exc.__traceback__)
         self.assertIn("ValueError: x", buffer.getvalue())
+
+
+class LogScrollTests(unittest.TestCase):
+    """滚到末尾要便宜：see("end") 实测一次吃掉 56 ms，yview_moveto 近乎免费。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def test_scroll_prefers_the_cheap_yview_moveto(self):
+        app = FakeApp()
+        calls = []
+        app.log = SimpleNamespace(yview_moveto=lambda frac: calls.append(("yview", frac)),
+                                  see=lambda index: calls.append(("see", index)))
+        self.app_cls._scroll_log_to_end(app)
+        self.assertEqual(calls, [("yview", 1.0)])
+
+    def test_scroll_falls_back_to_see_without_yview_moveto(self):
+        app = FakeApp()
+        calls = []
+        app.log = SimpleNamespace(see=lambda index: calls.append(("see", index)))
+        self.app_cls._scroll_log_to_end(app)
+        self.assertEqual(calls, [("see", "end")])
+
+    def test_scroll_swallows_a_dead_widget(self):
+        app = FakeApp()
+
+        def boom(*_a, **_k):
+            raise RuntimeError("窗口没了")
+
+        app.log = SimpleNamespace(yview_moveto=boom, see=boom)
+        self.app_cls._scroll_log_to_end(app)      # 退出路径上不许抛
 
 
 class TestabilityTests(unittest.TestCase):

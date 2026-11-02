@@ -19,7 +19,11 @@ DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双�
 - 生成二维码（窗口内显示，刷新 / 关闭即清除，**不落盘**）
 - 实时查看服务状态与日志（异常带 traceback，令牌自动打码）
 - 接管「已经跑着、但不是记录里那份安装」的 DSH 实例
-- 单实例：重复启动只把已有窗口拉到前台，不会开出第二个窗口
+- 单实例：重复启动只把已有窗口拉到前台，不会开出第二个窗口（收在托盘里也会先显示再聚焦）
+- 托盘常驻：关闭按钮收进托盘，菜单可显示/隐藏、复制地址、停止 DSH、退出；页脚开关一键改回「关闭即退出」
+- 日志跟随真机输出：直接 tail `dsh-web.stdout.log` / `dsh-web.stderr.log`，只追加新内容，上限 2000 行
+- 脱敏诊断包：一键导出 zip（元信息 / 探测明细 / 日志尾部 / 系统与网络原始输出），整包打码
+- 访问地址下拉：本机 / Tailscale / 每个局域网 IP 都标出来源，端口可改，支持 IPv6
 
 ## 环境要求
 
@@ -27,7 +31,7 @@ DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双�
 |---|---|
 | Windows | 10 / 11 |
 | Python | 3.11 及以上（开发与打包环境实测 3.11.9） |
-| 运行依赖 | `customtkinter`、`pillow`、`qrcode`（见 `requirements.txt`） |
+| 运行依赖 | `customtkinter`、`pillow`、`qrcode`、`pystray`（见 `requirements.txt`；托盘不可用会自动降级） |
 | 打包 | `pyinstaller >= 6, < 7` |
 | 本机已装 | DeepSeek Harness（`node_modules\@deepseek-ai\dsh`）+ Node.js |
 
@@ -104,13 +108,20 @@ dshconsole/status.py             五态判定：未运行 / 启动中 / 运行�
 dshconsole/probe.py              进程、端口、portproxy、防火墙、Tailscale、局域网地址探测
 dshconsole/psrun.py              结构化 PowerShell 调用（超时 / 权限 / 未安装分开表达）
 dshconsole/adopt.py              从「别的安装」的 bin.js 反推 harness 并写回 config.json
-dshconsole/single.py             单实例互斥体 + 把已有窗口切到前台（ctypes，无 pywin32）
+dshconsole/single.py             单实例互斥体 + 唤起已有窗口（ctypes 命名事件，无 pywin32）
 dshconsole/errors.py             traceback 脱敏摘要 + excepthook 安装
-dshconsole/textutil.py           日志里的令牌打码
+dshconsole/textutil.py           日志打码：redact() 打 token，redact_text() 管全部密钥
+dshconsole/logtail.py            按字节偏移跟随 stdout / stderr 日志（截断重同步、行数上限、逐行打码）
+dshconsole/tasks.py              串行命令队列（排队中 / 执行中 / 成功 / 失败 / 已取消）
+dshconsole/snapshot.py           状态短 TTL 缓存，「手动刷新」强制穿透
+dshconsole/addresses.py          访问地址候选（本机 / Tailscale / 局域网，带来源标注与端口校验）
+dshconsole/diagnostics.py        脱敏诊断包（meta.json / probe.txt / log-tail.txt / windows.txt）
+dshconsole/tray.py               系统托盘（pystray 可选，失败自动降级成普通窗口）
 dshconsole/resources.py          资源定位：源码运行取包目录，PyInstaller 冻结取 sys._MEIPASS
 dshconsole/data/launch-dsh.ps1   启动器（参数化，随包发布）
 dshconsole/data/switch-dsh-web.ps1  手机访问切换器（参数化，随包发布）
-tests/                           config / probe / psrun / status / redact / errors / single / adopt / GUI hooks
+tests/                           config / probe / psrun / status / redact / errors / single / adopt /
+                                 logtail / tasks / snapshot / addresses / diagnostics / tray / GUI hooks
 requirements.txt                 运行依赖
 DSHConsole.spec                  PyInstaller 打包描述
 DeepSeekChan [256x256].ico       窗口与 exe 图标
@@ -129,9 +140,10 @@ python dsh_gui.py --selftest        # 主窗口 + 采纳按钮的自检
 python dsh_gui.py --stop-selftest   # 「停止」整条链路（假进程 + 注入端口探测）
 ```
 
-测试只用标准库，用 `tempfile` 造假目录树，不依赖本机任何真实安装路径；两个自检同样
-把进程与端口探测全部注入（不碰真实 DSH 进程、也不要求 3080 空闲），所以在 CI 上可跑。
-GUI 用例需要 `customtkinter` / `pillow` / `qrcode`，没装时会跳过。
+共 186 个用例。测试只用标准库，用 `tempfile` 造假目录树，不依赖本机任何真实安装路径；两个自检
+同样把进程与端口探测全部注入（不碰真实 DSH 进程、也不要求 3080 空闲），所以在 CI 上可跑。
+GUI 用例需要 `customtkinter` / `pillow` / `qrcode`，没装时会跳过；托盘用例用假 pystray，
+不需要真的托盘环境。
 
 ## 版本进度
 
@@ -145,8 +157,11 @@ v1 的硬编码已在 v2「批次 A（可移植性）」修掉：
 | `qrcode` 未列入依赖 | 已进 `requirements.txt` |
 | spec 里 `name='DSHConsole'` 与实物不一致 | 已改为 `DSH 控制台`，并显式 `upx=False` |
 
+批次 C（体验层）也已完成：托盘常驻、日志跟随、脱敏诊断包、地址下拉、命令队列，以及把一次状态
+刷新从 14.4 秒压到 2.1 秒（一次 PowerShell 调用替代七次独立 spawn）。
+
 仍未做（后续批次）：产物没有 `version=` 版本信息（FileVersion / ProductName）、产物未签名
-（SmartScreen 显示「未知发布者」）。
+（SmartScreen 显示「未知发布者」）；界面信息架构与视觉重排属批次 D。
 
 ## 安全提示
 

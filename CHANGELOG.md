@@ -97,6 +97,64 @@ v2 批次 B2：接管与可观测性 —— 正在跑的实例能被接管，异
 - `--stop-selftest` 之前用 `update()` 手泵事件循环，工作线程 `after()` 抛 `RuntimeError` 导致自检假失败；
   改为真实 `mainloop()` + 轮询等待。
 
+v2 批次 C：体验层 —— 托盘常驻、跟随真实日志、脱敏诊断包、多地址选择器、串行命令队列，
+外加一次探测提速（改前 14.4 秒 → 改后 2.1 秒）。
+
+### 新增
+
+- `dshconsole/tray.py`（pystray）：托盘图标复用现有 `DeepSeekChan [256x256].ico`，菜单为
+  「显示/隐藏主窗口、复制手机访问地址、停止 DSH、退出」；关闭按钮收进托盘，页脚的开关可一键改回
+  「关闭即退出」，选择存进 `config.json` 的 `close_to_tray`。托盘不可用（无库、远程桌面）时自动
+  降级成普通窗口，并把原因写进日志框 —— 不会因为托盘把程序弄崩。
+- `dshconsole/logtail.py`：按字节偏移跟随 `dsh-web.stdout.log` / `dsh-web.stderr.log`，
+  只追加新内容；文件被截断或轮转时自动重同步；日志框上限 2000 行、超出滚动丢弃旧行；轮询间隔 0.4 秒
+  （下限 0.3 秒，不做 busy loop）。每一行进入界面前都过 `textutil.redact_text()`。
+- `dshconsole/textutil.py`：新增 `redact_text()`（`redact()` 的超集，原语义不变）：`token=`、
+  cookie / set-cookie / session、`Authorization: Bearer`、`api_key` / `password` 等键值、
+  `sk-` 与 `gho_`/`ghp_` 等前缀、以及 URL 里的 `user:pass@` 全部打码。
+- `dshconsole/diagnostics.py` 与界面「导出诊断包」：一个 zip，内含 `meta.json`（版本、时间、
+  解释器、是否冻结、phase/PID/notes、config 的路径类字段）、`probe.txt`（每项结论与耗时）、
+  `log-tail.txt`（日志尾部 500 行）、`windows.txt`（OS / PowerShell / portproxy / 防火墙原始输出）。
+  四个条目在写进 zip 的那一刻就只有一个打过码的版本，不存在忘打码的中间文件。
+- `dshconsole/addresses.py`：访问地址候选 —— 本机 / Tailscale / 每个局域网 IP，每项标注来源
+  （本机 / Tailscale / 以太网 / WLAN），端口可编辑并按 1-65535 校验，IPv6 自动加方括号；
+  探测失败显示「未知（原因）」，不给空下拉。
+- `dshconsole/tasks.py`：串行命令队列，状态为「排队中 / 执行中 / 成功 / 失败 / 已取消」，
+  排队中的任务可取消（正在执行的不强杀 —— 它可能正拿着跨进程句柄），界面显示「前面还有 N 个」。
+- `dshconsole/snapshot.py`：状态短 TTL（3 秒）缓存，「手动刷新」强制穿透。
+- `dshconsole/probe.py`：`probe_all()` 一次刷新只 spawn 一次 PowerShell（node 进程与网卡地址
+  走同一段脚本），netsh portproxy / netsh 防火墙 / `tailscale.exe` 并行执行；返回结构化
+  `RawProbe`（含每项耗时与失败原因），查不到仍是 `None`。
+- `dshconsole/single.py`：`Activator` 命名事件 —— 第二个实例被互斥体挡下时唤起已有窗口，
+  窗口收在托盘里也会先显示再聚焦。
+- 测试：`test_snapshot` / `test_logtail` / `test_tasks` / `test_addresses` /
+  `test_diagnostics` / `test_tray` 六个新文件，以及 8.3 短名归一化用例（124 → 186 个用例）。
+
+### 变更
+
+- 状态刷新改为非阻塞：先显示上次结果 + 「刷新中…」，后台线程探测，完成后 `after(0, ...)` 回填；
+  打开窗口或点刷新都不再冻结界面。
+- 「复制手机地址 / 生成二维码」从手输 IP 改成下拉选地址 + 可编辑端口。
+- 所有会阻塞的按钮改走串行队列，队列状态显示在状态卡片；全局 `_busy` 移除，异常 / 超时 / 取消后
+  按钮都回到可用态。
+- 防火墙探测从 `Get-NetFirewallRule`（约 2.6 秒）换成 `netsh advfirewall firewall show rule`
+  （约 0.1 秒）；网卡地址改用 .NET `NetworkInterface`（顺带拿到「以太网 / WLAN / Tailscale」名称）；
+  进程查询与地址查询合并成一次 PowerShell 调用。
+- CI：`py_compile` 覆盖 `dshconsole` 全部 16 个模块，依赖检查加 `pystray`；`--selftest`
+  增加「日志行数上限」和「地址候选非空」两项，`--stop-selftest` 改为断言队列空闲。
+
+### 修复
+
+- 一次完整状态刷新从 14.43 秒（改前三次中位数）降到 2.08 秒（改后三次中位数），同一台机器实测。
+- 8.3 短名路径（CI runner 的 `RUNNER~1`）下，控制台认不出自己启动的 DSH：`bin.js` 路径比对
+  永远不相等。config 返回的路径统一 `resolve()` 归一化，并补了短名 / 长名归一化的回归用例。
+- 托盘菜单文案是可调用对象时，pystray 以 `text(item)` 调用它，实测抛
+  `TypeError: ... takes 1 positional argument but 2 were given`；已包一层适配并加用例。
+- 状态回填回调本身曾经吃掉 105 毫秒：其中 `Text.see("end")` 一次 56 毫秒（要算末尾
+  bbox），`token_url()` 又在主线程读日志跑正则、和探测线程抢 GIL。改成 `yview_moveto(1.0)`、
+  token 在后台线程算、多行说明合成一次 insert 之后，刷新期间注入的 Tk 回调中位数 31 毫秒、
+  最坏 48 毫秒（改前主线程被整个冻结 14 秒）。
+
 ## [1.0.0] - 2026-11-03
 
 首个公开快照：把本机自用的控制台原样开源，作为后续迭代的基线。
