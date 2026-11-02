@@ -159,7 +159,7 @@ if ($Mode -eq 'expose') {
         Write-Info '[DryRun] 将执行：'
         foreach ($ip in $allIps) { Write-Info "  netsh portproxy v4tov4 listenaddress=$ip listenport=$Port -> 127.0.0.1:$Port" }
         Write-Info "  防火墙规则：node.exe TCP $Port 入站允许（Private/Domain）"
-        Write-Info "  启动：node bin.js web --no-open --port $Port --trusted-host <ip>:$Port ..."
+        Write-Info "  启动 DSH 网页进程（端口 $Port，trusted-host 含各网卡地址）"
         Pause-End
         exit
     }

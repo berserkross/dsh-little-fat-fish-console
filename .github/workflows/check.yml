@@ -17,8 +17,19 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip -r requirements.txt
       - name: Syntax check
-        run: python -m py_compile dsh_gui.py dshconsole/__init__.py dshconsole/config.py dshconsole/resources.py
+        run: >
+          python -m py_compile dsh_gui.py
+          dshconsole/__init__.py dshconsole/adopt.py dshconsole/config.py
+          dshconsole/errors.py dshconsole/probe.py dshconsole/psrun.py
+          dshconsole/resources.py dshconsole/single.py dshconsole/status.py
+          dshconsole/textutil.py
       - name: Dependency import check
         run: python -c "import tkinter, customtkinter, PIL, qrcode; print('deps ok')"
+      # GUI 用例与两个自检都要真的窗口，所以放在依赖装好之后；自检不碰本机真实的
+      # DSH 进程与端口（探测口全部注入），runner 上没有 DSH 也能跑。
+      - name: GUI self-test
+        run: |
+          python dsh_gui.py --selftest
+          python dsh_gui.py --stop-selftest
       - name: Unit tests
         run: python -m unittest discover -s tests -v

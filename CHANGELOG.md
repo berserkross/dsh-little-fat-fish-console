@@ -61,7 +61,41 @@ v2 批次 B1：正确性核心 —— 「查不到」不再冒充「未运行」
 - 同形态的其他 `node bin.js web` 进程会被误认成 DSH，点「停止」即被结束。
 - 「复制手机地址」把带令牌的完整地址打进日志框，屏幕共享或截图即泄露；日志现在打码，剪贴板仍是完整地址。
 - `requirements.txt` 的中文注释在中文 Windows + Python 3.11 上让 `pip install -r` 直接抛 `UnicodeDecodeError`（pip 无 BOM 时按 locale 解码）；注释改为 ASCII，文件保持无 BOM。
-- `--port` 等参数报错时，GBK 代码页下中文输出乱码；启动时把 stdout/stderr 重配为 UTF-8。
+v2 批次 B2：接管与可观测性 —— 正在跑的实例能被接管，异常不再静默，单实例与自检可被 CI 自动验证。
+
+### 新增
+
+- `dshconsole/adopt.py`：把「占用端口但不是我这份 bin.js」的候选反推成 harness（从
+  `node_modules\@deepseek-ai\dsh\lib\bin.js` 往上剥 `config.BIN_JS_REL` 的层数，再用 `looks_like_harness` 校验），
+  写回 `config.json` 并标记 `"source": "adopted"`；推不出目录时拒绝写入，提示改用 `--harness`。
+- `dshconsole/errors.py`：`summarize()` 把 traceback 截到 12 帧 / 2000 字符并过一遍 `textutil.redact()`，
+  `install()` 同时接管 `sys.excepthook` 与 `threading.excepthook`（后者头部带线程名）。
+- `dshconsole/single.py`：Windows 命名互斥体 `Local\DshConsole.SingleInstance`（`CreateMutexW` +
+  `ERROR_ALREADY_EXISTS`），第二个进程把已有窗口 `SetForegroundWindow` 后以退出码 0 结束；非 Windows
+  或 ctypes 不可用只记一行日志、不阻止启动。
+- 界面：状态为 DEGRADED 且存在占用候选时出现「改为控制运行中的实例（PID …）」按钮；多个候选弹输入框
+  让用户选序号，不默认第一个；采纳成功后按钮立刻收起并立刻重新探测。
+- 测试：`tests/test_errors.py` / `test_single.py` / `test_adopt.py` / `test_gui_hooks.py`（全量 124 个用例）。
+
+### 变更
+
+- 探测口全部改为实例级可注入：`_pids_provider` / `_status_provider` / `_port_open`；两个 `--*-selftest`
+  不再猴补丁 `globals()`，也不再依赖本机真实 DSH 进程与 3080 端口。
+- `Tk.report_callback_exception` 改为 `_on_callback_error`：脱敏 traceback 写进日志框并立即释放 `_busy`。
+- 后台线程往界面投递（`after`）在窗口已销毁时退回 stderr，不再让工作线程抛
+  `RuntimeError: main thread is not in main loop`。
+- `config.json` 增加 `source` 字段，只交代配置来龙去脉，不参与探测优先级。
+- CI：`py_compile` 覆盖 `dshconsole` 全部模块，新增 `--selftest` 与 `--stop-selftest` 两个 GUI 自检步骤。
+- `switch-dsh-web.ps1:162` 的启动提示不再出现 `bin.js web` 字面量，免得和「按命令行识别进程」的口径混淆。
+
+### 修复
+
+- 本机实际在跑的是 npx 缓存里那份安装时，状态显示「异常（端口被占用）」且「停止 / 重启」对真正在跑的
+  实例完全无效（B1 收紧进程识别带来的日常使用回归）；现在可以一键采纳并立刻转为「运行中」。
+- 后台线程异常与界面回调异常此前只打到 stderr（打包成 exe 后完全看不见），界面还会停在「进行中」；
+  现在进日志框、令牌打码、`_busy` 必定释放。
+- `--stop-selftest` 之前用 `update()` 手泵事件循环，工作线程 `after()` 抛 `RuntimeError` 导致自检假失败；
+  改为真实 `mainloop()` + 轮询等待。
 
 ## [1.0.0] - 2026-11-03
 
