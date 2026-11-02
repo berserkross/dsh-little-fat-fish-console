@@ -11,10 +11,10 @@
 | B1 | 正确性（结构化探测、五态、脱敏、PID 确认） | ✅ 已验收 | `6c72bac` `9bdd07a` `9d8cb99` |
 | B2 | 采纳运行中实例、单实例、异常显式化、去猴补丁 | ✅ 已验收并推送 | `c072600` `e468171` `4c03684` `65255e6` |
 | C | 体验层五项 + 性能修复 + CI 缺陷 | ✅ 已验收并推送 | `b9d1a74` `4324165` `842b339` `3e71249` `92ee3ce` `5e998ea` |
-| E | 发布（version_info、`py -3.11` 构建、签名方案） | 🔄 进行中 | — |
+| E | 发布（version_info、`py -3.11` 构建、签名方案） | ✅ 已验收并推送 | `718c34a` |
 | D | 视觉重排（信息架构、状态环） | ⏳ 未开始（你说最后做） | — |
 
-远端 main = `f5f5c41`。**CI 已绿**（run 41506014906，39s，八步全过）。
+远端 main = `718c34a`。**CI 已绿**（run 41506609308，2m9s，九步全过，含新增的「构建 onefile exe 并断言版本资源」）。
 
 ## 决策记录（你定的 + 我定的）
 
@@ -83,6 +83,21 @@ timings                                 → {'node':864,'addresses':37,'total':9
 四件套: meta.json probe.txt log-tail.txt windows.txt  每文件 hits=0 frag=0
 TOTAL_LEAKS = 0        MASK_COUNT = 28
 ```
+
+### E（我自己复验产物）
+```
+dist\DSHConsole.exe  32,151,698 B   onefile / x64 / GUI 子系统 / manifest asInvoker（不弹 UAC）
+SHA256               04700552D6835F521634D4B4531B409DC69AF925CC14152C03318FD05E5E85FD
+VersionInfo  FileVersion=2.0.0.0  ProductVersion=2.0.0.0  CompanyName=berserkross
+             ProductName=FileDescription=DSH 控制台（小肥鱼控制台）
+             LegalCopyright=MIT License · Copyright (c) 2026 YANG TIANRUI  OriginalFilename=DSHConsole.exe
+冻结态自检   DSHConsole.exe --selftest → SELFTEST OK exit 0
+             DSHConsole.exe --stop-selftest → STOP SELFTEST OK exit 0
+打包内容     dshconsole\data\launch-dsh.ps1 / switch-dsh-web.ps1 / DeepSeekChan [256x256].ico 均在归档里
+git 卫生     git ls-files 里 dist/ build/ *.exe 命中 0；.gitignore 已含 build/ dist/
+证书         Cert:\CurrentUser\My 无 CodeSigningCert；signtool 未安装 ⇒ 维持"不挂 unsigned exe"
+```
+spec 现在有 `version='version_info.txt'` / `name='DSHConsole'` / `upx=False` / `console=False`；CI 新增一步会构建 exe 并断言四项版本字段非空——防的正是「spec 漏一行、exe 照样能跑但属性页空白」这种静默失效。
 
 ### 性能目标只做到一半（我的决定，写清理由）
 ```
