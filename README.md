@@ -1,7 +1,7 @@
 # 小肥鱼控制台 · DSH Console
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![check](https://github.com/berserkross/dsh-littleFatFishConsole/actions/workflows/check.yml/badge.svg)](https://github.com/berserkross/dsh-littleFatFishConsole/actions/workflows/check.yml)
+[![check](https://github.com/berserkross/dsh-little-fat-fish-console/actions/workflows/check.yml/badge.svg)](https://github.com/berserkross/dsh-little-fat-fish-console/actions/workflows/check.yml)
 
 DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双击 exe 或运行脚本即可打开窗口，
 用来在本机启动 / 停止 DSH Web 服务、把服务临时开给手机访问、以及随时看状态。
