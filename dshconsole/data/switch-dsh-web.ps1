@@ -2,12 +2,19 @@
     [switch]$Restore,   # 恢复为仅本机访问
     [switch]$DryRun,    # 只打印计划，不做任何改动
     [switch]$Force,     # 跳过确认
-    [switch]$NoPause    # 结束时不等待按键（自动化用）
+    [switch]$NoPause,   # 结束时不等待按键（自动化用）
+
+    [string]$Harness  = '',    # DSH 安装目录；空则回退 DSH_HOME 父目录/脚本上一级
+    [string]$NodeExe  = '',    # node.exe 全路径；空则用 PATH 里的 node
+    [string]$BinJs    = '',    # bin.js 全路径；空则由 $Harness 推导
+    [string]$DshHome  = '',    # DSH_HOME；空则由 $Harness 推导
+    [int]$Port        = 3080,  # 网页端口（端口转发与信任来源都用它）
+    [string]$RuleName = ''     # 防火墙规则名；空则按端口生成
 )
 
 # ============================================================
 #  DSH 手机访问切换器
-#  - 默认模式：把 DSH 网页（127.0.0.1:3080）经端口转发开放给
+#  - 默认模式：把 DSH 网页（127.0.0.1:<Port>）经端口转发开放给
 #              Tailscale IP（及局域网 IP），并加 trusted-host 放行 /api
 #  - -Restore ：拆除开放，恢复仅本机可访问
 #  说明：当前版本 dsh 禁止监听 0.0.0.0，所以用 netsh 端口转发 + token 地址。
@@ -15,15 +22,20 @@
 
 $ErrorActionPreference = 'Stop'
 
-$Harness  = 'C:\Users\Ibash\Documents\Codex\apps\deepseek-harness'
-$NodeExe  = 'D:\Program Files\nodejs\node.exe'
-$BinJs    = Join-Path $Harness 'node_modules\@deepseek-ai\dsh\lib\bin.js'
-$Port     = 3080
-$RuleName = 'DSH Web 3080 access'
-$OutLog   = Join-Path $Harness 'dsh-web.stdout.log'
-$ErrLog   = Join-Path $Harness 'dsh-web.stderr.log'
+# ---------------- 参数回退（GUI 一律显式传参，这里只兜双击独立运行） ----------------
+if (-not $Harness -and $env:DSH_HOME) { $Harness = Split-Path -Parent $env:DSH_HOME }
+if (-not $Harness) { $Harness = Split-Path -Parent $PSScriptRoot }
+if (-not $NodeExe -or -not (Test-Path -LiteralPath $NodeExe)) {
+    $cmd = Get-Command node.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $NodeExe = $cmd.Source }
+}
+if (-not $BinJs) { $BinJs = Join-Path $Harness 'node_modules\@deepseek-ai\dsh\lib\bin.js' }
+if (-not $RuleName) { $RuleName = "DSH Web $Port access" }
+$OutLog = Join-Path $Harness 'dsh-web.stdout.log'
+$ErrLog = Join-Path $Harness 'dsh-web.stderr.log'
 
-$env:DSH_HOME    = 'C:\Users\Ibash\Documents\Codex\.dsh'
+if (-not $DshHome) { $DshHome = Join-Path $Harness '.dsh' }
+$env:DSH_HOME    = $DshHome
 $env:DSH_PROFILE = 'web'
 
 $Mode = if ($Restore) { 'restore' } else { 'expose' }
@@ -54,7 +66,7 @@ function Get-TokenUrl {
     while ((Get-Date) -lt $deadline) {
         if (Test-Path $LogFile) {
             $text = Get-Content $LogFile -Raw -ErrorAction SilentlyContinue
-            if ($text -and ($text -match 'http://127\.0\.0\.1:(?<port>\d+)/\?token=(?<tok>[A-Za-z0-9_\-]+)')) {
+            if ($text -and ($text -match "http://127\.0\.0\.1:(?<port>\d+)/\?token=(?<tok>[A-Za-z0-9_\-]+)")) {
                 return $Matches[0].Trim()
             }
         }
@@ -104,6 +116,19 @@ if (-not $DryRun -and -not (Test-Admin)) {
     if ($Restore) { $argList += '-Restore' }
     if ($Force)   { $argList += '-Force' }
     if ($NoPause) { $argList += '-NoPause' }
+    # 参数化后关键一步：值参数必须一并透传，否则提权后的子进程只剩空默认值
+    foreach ($pair in @(
+        @('-Harness',  $Harness),
+        @('-NodeExe',  $NodeExe),
+        @('-BinJs',    $BinJs),
+        @('-DshHome',  $DshHome),
+        @('-Port',     "$Port"),
+        @('-RuleName', $RuleName))) {
+        if ($pair[1]) {
+            $argList += $pair[0]
+            $argList += ('"{0}"' -f $pair[1])
+        }
+    }
     try {
         Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $argList | Out-Null
     } catch {
@@ -142,7 +167,7 @@ if ($Mode -eq 'expose') {
 } else {
     Write-Info '=== DSH 手机访问：恢复本机 ==='
     if ($DryRun) {
-        Write-Info '[DryRun] 将删除全部 3080 端口转发、防火墙规则，并重启为仅本机模式。'
+        Write-Info "[DryRun] 将删除全部 $Port 端口转发、防火墙规则，并重启为仅本机模式。"
         Pause-End
         exit
     }
