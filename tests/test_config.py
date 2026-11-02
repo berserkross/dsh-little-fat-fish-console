@@ -68,7 +68,9 @@ class HermeticDetection(HermeticBase):
         harness = make_harness(self.tmp)
         deep = harness / "a" / "b"
         deep.mkdir(parents=True)
-        self.assertEqual(config.harness_from_cwd(deep), harness)
+        # 比的是规范路径：CI 的 runner 里 Path.cwd() 给的是 8.3 短名（RUNNER~1），
+        # 而 mkdtemp 给的是长名，两个拼法必须是同一个值。
+        self.assertEqual(config.harness_from_cwd(deep), harness.resolve())
 
     def test_detect_harness_returns_none(self) -> None:
         self.assertIsNone(config.detect_harness(None, None, self.empty))
@@ -188,6 +190,64 @@ class CliParsing(HermeticBase):
         for argv in cases:
             with self.subTest(argv=argv), self.assertRaises(config.CliError):
                 config.parse_cli(list(argv))
+
+
+def _short_name(path: str) -> str | None:
+    """问 Windows 要 8.3 短名；拿不到就返回 None（不支持的机器上跳过）。"""
+    if os.name != "nt":
+        return None
+    import ctypes
+    size = ctypes.windll.kernel32.GetShortPathNameW(str(path), None, 0)
+    if not size:
+        return None
+    buffer = ctypes.create_unicode_buffer(size)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, size):
+        return None
+    return buffer.value or None
+
+
+class CanonicalPathTests(HermeticBase):
+    """8.3 短名 / 长名 / 相对写法必须归一成同一个值。
+
+    真实事故：GitHub runner 上 Path.cwd() 给的是短名（C:/Users/RUNNER~1/...），
+    mkdtemp 给的是长名（C:/Users/runneradmin/...），两个拼法不相等 —— 于是用短名启动
+    的控制台永远认不出
+    自己启动的那个 DSH（bin.js 路径比对不上）。归一化是唯一的解法。
+    """
+
+    def test_canonical_path_removes_dot_segments_and_is_absolute(self) -> None:
+        target = self.tmp / "a" / "b"
+        target.mkdir(parents=True)
+        messy = self.tmp / "a" / "b" / ".." / "b"
+        self.assertEqual(config.canonical_path(messy), target.resolve())
+        self.assertTrue(config.canonical_path(messy).is_absolute())
+
+    def test_canonical_path_of_nothing_is_none(self) -> None:
+        self.assertIsNone(config.canonical_path(None))
+        self.assertIsNone(config.canonical_path(""))
+
+    def test_two_spellings_of_one_directory_become_one_value(self) -> None:
+        harness = make_harness(self.tmp)
+        spellings = [harness, Path(str(harness) + os.sep + "."),
+                     Path(str(harness) + os.sep + "a" + os.sep + ".."),
+                     Path(str(harness).replace(os.sep, "/"))]
+        (harness / "a").mkdir()
+        self.assertEqual({config.canonical_path(item) for item in spellings},
+                         {harness.resolve()})
+
+    def test_short_name_and_long_name_normalize_to_one_value(self) -> None:
+        harness = make_harness(self.tmp)
+        long_form = config.canonical_path(harness)
+        short_form = _short_name(long_form)
+        if short_form is None or Path(short_form) == long_form:
+            self.skipTest("这台机器没给出 8.3 短名（卷上短名被关了）")
+        self.assertNotEqual(short_form, str(long_form))     # 确实是两种拼法
+        self.assertEqual(config.canonical_path(short_form), long_form)
+
+    def test_detect_harness_hands_back_a_canonical_path(self) -> None:
+        harness = make_harness(self.tmp)
+        messy = Path(str(harness) + os.sep + ".")
+        self.assertEqual(config.detect_harness(messy, None, self.empty), harness.resolve())
 
 
 if __name__ == "__main__":

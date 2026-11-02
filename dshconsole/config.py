@@ -22,6 +22,8 @@ CONFIG_ENV = "DSH_CONSOLE_CONFIG"   # 测试/便携场景可整体改写配置�
 DEFAULT_PORT = 3080
 BIN_JS_REL = Path("node_modules") / "@deepseek-ai" / "dsh" / "lib" / "bin.js"
 TOKEN_LOG_NAME = "dsh-web.stdout.log"
+STDERR_LOG_NAME = "dsh-web.stderr.log"
+CLOSE_TO_TRAY = "close_to_tray"     # 关闭按钮的行为：True=收进托盘，False=直接退出
 
 
 def _is_dir(value: object) -> bool:
@@ -47,6 +49,21 @@ def _first_file(candidates: list[Path]) -> Path | None:
 
 def _env(name: str) -> str:
     return os.environ.get(name) or ""
+
+
+def canonical_path(value: object) -> Path | None:
+    """把路径归一成规范的绝对长路径（展开 8.3 短名、.. 与大小写）。
+
+    为什么要归一：进程命令行里的 bin.js 是长名，而 8.3 短名形态（C:\\Users\\RUNNER~1\\…）
+    严格比较永远不相等，于是「在短名路径下运行的控制台认不出自己启动的 DSH」。
+    归一放在「把路径交给外部」的出口，比较函数保持纯字符串折叠，不重复 resolve。
+    """
+    if not value:
+        return None
+    try:
+        return Path(str(value)).resolve()
+    except OSError:
+        return Path(str(value))
 
 
 # ---------------- 单项探测 ----------------
@@ -108,7 +125,7 @@ def harness_from_cwd(cwd: str | Path | None = None) -> Path | None:
         if depth > 12:
             break
         if looks_like_harness(parent):
-            return parent
+            return canonical_path(parent)
     return None
 
 
@@ -130,7 +147,7 @@ def harness_from_dsh_home() -> Path | None:
     if not hits:
         return None
     hits.sort(key=lambda p: ("harness" not in p.name.lower(), p.name.lower()))
-    return hits[0]
+    return canonical_path(hits[0])
 
 
 def detect_harness(explicit: object = None, stored: object = None,
@@ -138,7 +155,7 @@ def detect_harness(explicit: object = None, stored: object = None,
     """显式 > 记录 > DSH_HOME 父目录 > dsh 命令 > 常见安装位 > cwd 向上 > None。"""
     for cand in (explicit, stored):
         if _is_dir(cand):
-            return Path(str(cand))
+            return canonical_path(cand)
     found = harness_from_dsh_home()
     if found:
         return found
@@ -241,15 +258,26 @@ _VALIDATORS = {
 }
 
 
-def load(path: str | Path | None = None) -> dict:
-    """读取记录；路径已失效的键直接丢弃，交给下一次探测重新决定。"""
+def _read_raw(path: str | Path | None = None) -> dict:
+    """原样读出 json 对象（不做校验）；坏文件 / 不存在一律当空字典。"""
     target = Path(path) if path else config_path()
     try:
         raw = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    if not isinstance(raw, dict):
-        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_raw(data: dict, path: str | Path | None = None) -> Path:
+    target = Path(path) if path else config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def load(path: str | Path | None = None) -> dict:
+    """读取记录；路径已失效的键直接丢弃，交给下一次探测重新决定。"""
+    raw = _read_raw(path)
     data: dict = {}
     for key, validator in _VALIDATORS.items():
         value = raw.get(key)
@@ -275,9 +303,25 @@ def save(cfg: "DshConfig", path: str | Path | None = None) -> Path:
     source = getattr(cfg, "source", None)
     if source:
         data["source"] = str(source)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return target
+    # 用户设置在探测结果之外，重写探测结果时不能顺手把它抹掉。
+    keep = _read_raw(target).get(CLOSE_TO_TRAY)
+    if isinstance(keep, bool):
+        data[CLOSE_TO_TRAY] = keep
+    return _write_raw(data, target)
+
+
+def close_to_tray(default: bool = True, path: str | Path | None = None) -> bool:
+    """关闭按钮是否收进托盘。没记录过就用 default（首次启动按默认走，不写盘）。"""
+    value = _read_raw(path).get(CLOSE_TO_TRAY)
+    return value if isinstance(value, bool) else bool(default)
+
+
+def set_close_to_tray(value: bool, path: str | Path | None = None) -> Path:
+    """只改这一项，保留 config.json 里其余的键（探测结果与端口都不动）。"""
+    target = Path(path) if path else config_path()
+    data = _read_raw(target)
+    data[CLOSE_TO_TRAY] = bool(value)
+    return _write_raw(data, target)
 
 
 # ---------------- 汇总 ----------------
@@ -306,6 +350,16 @@ class DshConfig:
     def token_log(self) -> Path | None:
         """两个 ps1 都把启动日志写在 harness 目录下。"""
         return (self.harness / TOKEN_LOG_NAME) if self.harness else None
+
+    @property
+    def stderr_log(self) -> Path | None:
+        """stderr 日志；两个 ps1 都用这个文件名。"""
+        return (self.harness / STDERR_LOG_NAME) if self.harness else None
+
+    @property
+    def log_files(self) -> list["Path"]:
+        """界面要跟随的日志文件（stdout 在前，stderr 在后）。"""
+        return [path for path in (self.token_log, self.stderr_log) if path is not None]
 
     @classmethod
     def resolve(cls, explicit_harness: object = None, explicit_port: object = None,

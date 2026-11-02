@@ -10,10 +10,13 @@ import ipaddress
 import json
 import re
 import socket
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .psrun import PsResult, run_ps_cmd
+from .psrun import PsResult, run_native, run_ps_cmd
 
 Runner = Callable[..., PsResult]
 LOCAL_HOSTS = ("127.0.0.1", "localhost")
@@ -236,10 +239,17 @@ def parse_process_list(text: str) -> list[tuple[int, str]] | None:
         data = json.loads(raw)
     except ValueError:
         return None
+    return _process_pairs(data)[0]
+
+
+def _process_pairs(data: object) -> tuple[list[tuple[int, str]] | None, str | None]:
+    """已经是 Python 对象（批量探测的 JSON 段）时走这条路，省一次 dumps/loads。"""
+    if data is None:
+        return None, "node 进程查询没有返回内容"
     if isinstance(data, dict):
         data = [data]
     if not isinstance(data, list):
-        return None
+        return None, "node 进程查询没有返回进程列表"
     processes: list[tuple[int, str]] = []
     for item in data:
         if not isinstance(item, dict):
@@ -251,7 +261,7 @@ def parse_process_list(text: str) -> list[tuple[int, str]] | None:
             continue
         if isinstance(command_line, str) and command_line:
             processes.append((pid, command_line))
-    return processes
+    return processes, None
 
 
 def node_processes(runner: Runner | None = None) -> tuple[list[tuple[int, str]] | None, str | None]:
@@ -265,6 +275,27 @@ def node_processes(runner: Runner | None = None) -> tuple[list[tuple[int, str]] 
     return processes, None
 
 
+def classify(processes: list[tuple[int, str]],
+             bin_js: Path | str | None) -> tuple[list[int], list[tuple[int, str]]]:
+    """一份进程列表同时算出「本机 DSH 的 PID」与「别的安装里的 DSH」。
+
+    两条判断合成一次遍历：批量查询已经拿到进程列表，再各自 spawn 一次纯属浪费。
+    """
+    wanted = normalize_path(str(bin_js)) if bin_js else ""
+    pids: set[int] = set()
+    others: list[tuple[int, str]] = []
+    for pid, command_line in processes:
+        paths = command_line_paths(command_line)
+        if wanted and any(normalize_path(path) == wanted for path in paths):
+            pids.add(pid)
+            continue
+        for path in paths:
+            if is_dsh_bin_js(path) and normalize_path(path) != wanted:
+                others.append((pid, path))
+                break
+    return sorted(pids), others
+
+
 def dsh_processes(bin_js: Path | str | None, runner: Runner | None = None) -> tuple[list[int] | None, str | None]:
     """命令行里带「本机这一个 bin.js 绝对路径」的 node 进程 PID。
 
@@ -276,10 +307,7 @@ def dsh_processes(bin_js: Path | str | None, runner: Runner | None = None) -> tu
     processes, err = node_processes(runner)
     if processes is None:
         return None, err
-    wanted = normalize_path(str(bin_js))
-    pids = sorted({pid for pid, command_line in processes
-                   if any(normalize_path(path) == wanted
-                          for path in command_line_paths(command_line))})
+    pids, _others = classify(processes, bin_js)
     return pids, None
 
 
@@ -289,11 +317,264 @@ def other_dsh_processes(bin_js: Path | str | None,
     processes, err = node_processes(runner)
     if processes is None:
         return None, err
-    wanted = normalize_path(str(bin_js)) if bin_js else ""
-    others: list[tuple[int, str]] = []
-    for pid, command_line in processes:
-        for path in command_line_paths(command_line):
-            if is_dsh_bin_js(path) and normalize_path(path) != wanted:
-                others.append((pid, path))
-                break
+    _pids, others = classify(processes, bin_js)
     return others, None
+
+# ---------------- 一次刷新问完全部问题 ----------------
+# 逐项 spawn 的实测开销（本机，冷缓存）：powershell 冷启动 ≈1.0~1.15s，
+#   dsh_processes 2.23s / other_dsh_processes 2.07s / portproxy 1.36s /
+#   firewall_rule 4.41s / lan_ips 2.46s → 合计 12~15s。
+# 两条优化一起用：
+#   1) 进程 / 网卡 / tailscale 合并进**一个** PowerShell 脚本，一次冷启动；
+#   2) 两条 netsh 直接当原生 EXE 跑（各 ~0.10s），与 PS 那一路并行（ThreadPoolExecutor）。
+# 于是关键路径 = PS 启动 + CIM 查询，而不是「五项探测相加」。
+BATCH_TIMEOUT = 25
+NETSH_TIMEOUT = 15
+# netsh 的「没有这条规则」退出码：Windows 上会以 1 / -1 / 4294967295 的面貌出现。
+MISSING_RULE_CODES = (0, 1, -1, 4294967295)
+
+
+def _ps_quote(value: object) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def core_command() -> str:
+    """一个 PowerShell 脚本，输出 JSON：node 进程 / 网卡地址（带来源名）/ tailscale 地址。
+
+    进程查询用 Get-CimInstance（CommandLine 只有它能给）；网卡地址用 .NET
+    NetworkInterface —— Get-NetIPAddress 要 451ms，它只要 ~60ms，而且能顺带
+    拿到网卡名（Tailscale / 以太网 / WLAN）做下拉的来源标注。
+    """
+    parts = [
+        "$ErrorActionPreference = 'Stop'",
+        "$out = [ordered]@{}",
+        "function Step([string]$name, [scriptblock]$body) {",
+        "  $t = [System.Diagnostics.Stopwatch]::StartNew()",
+        "  try { $out[$name] = & $body } catch { $out[($name + '_error')] = $_.Exception.Message }",
+        "  $t.Stop()",
+        "  $out[($name + '_ms')] = [int]$t.ElapsedMilliseconds",
+        "}",
+        "$all = [System.Diagnostics.Stopwatch]::StartNew()",
+        "Step 'node' {",
+        "  @(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" -ErrorAction Stop |",
+        "    Select-Object ProcessId, CommandLine)",
+        "}",
+        "Step 'addresses' {",
+        "  $list = @()",
+        "  foreach ($nic in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {",
+        "    if ($nic.OperationalStatus -ne [System.Net.NetworkInformation.OperationalStatus]::Up) { continue }",
+        "    foreach ($uni in $nic.GetIPProperties().UnicastAddresses) {",
+        "      if ($uni.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }",
+        "      $list += [ordered]@{ ip = $uni.Address.IPAddressToString; name = $nic.Name;",
+        "        kind = $nic.NetworkInterfaceType.ToString() }",
+        "    }",
+        "  }",
+        "  $list",
+        "}",
+    ]
+    parts += [
+        "$all.Stop()",
+        "$out['total_ms'] = [int]$all.ElapsedMilliseconds",
+        "ConvertTo-Json -InputObject $out -Depth 6 -Compress",
+    ]
+    return "\n".join(parts) + "\n"
+
+
+def _is_lan_ip(ip: str) -> bool:
+    return bool(re.match(r"^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\.", ip))
+
+
+def portproxy_text(runner: Runner | None = None) -> tuple[str | None, str | None]:
+    """端口转发表格的原文（直接调 netsh.exe，~0.10s）。"""
+    run = runner or run_native
+    result = run(["netsh", "interface", "portproxy", "show", "v4tov4"], timeout=NETSH_TIMEOUT)
+    if not result.ok:
+        return None, _failure("端口转发查询失败", result)
+    return result.text, None
+
+
+def netsh_firewall_state(port: int,
+                         runner: Runner | None = None) -> tuple[bool | None, str | None, str]:
+    """(有规则 / 未定, 未知原因, netsh 原始输出)。
+
+    判定顺序：输出里有规则名 → 有这条规则（netsh 找到时会回显规则名）；
+    没有规则名且退出码属于「没有匹配规则」→ 没有这条规则；
+    其余（netsh 本身报错）→ 未知 + 原因。实测 0.10s，而 Get-NetFirewallRule 要 2.6s。
+    """
+    run = runner or run_native
+    rule = FIREWALL_RULE.format(port=port)
+    result = run(["netsh", "advfirewall", "firewall", "show", "rule", "name=" + rule],
+                 timeout=NETSH_TIMEOUT)
+    text = result.text
+    if rule.lower() in text.lower():
+        return True, None, text
+    code = result.code
+    if code is not None and code in MISSING_RULE_CODES:
+        return False, None, text
+    return None, result.why() or "防火墙规则查询没有给出结论", text
+
+
+def tailscale_ip_native(exe: Path | str | None,
+                        runner: Runner | None = None) -> tuple[str | None, str | None]:
+    """直接跑 tailscale.exe（~0.05s）而不是让 PowerShell 代跑：省掉一段串行等待。"""
+    if not exe:
+        return None, "未检测到 tailscale.exe（可在 config.json 里指定路径）"
+    run = runner or run_native
+    result = run([str(exe), "ip", "-4"], timeout=NETSH_TIMEOUT)
+    if not result.ok:
+        return None, _failure("tailscale ip 查询失败", result)
+    for token in result.text.split():
+        found = _ipv4(token)
+        if found and not found.startswith("127."):
+            return found, None
+    return None, "tailscale 没有返回可用的 IPv4 地址"
+
+
+@dataclass(frozen=True)
+class RawProbe:
+    """批量探测的原始结果：字段全是「值 / None + 原因」，判定留给 status。"""
+
+    processes: list[tuple[int, str]] | None = None
+    process_error: str | None = None
+    portproxy_text: str | None = None
+    portproxy_error: str | None = None
+    firewall: bool | None = None
+    firewall_error: str | None = None
+    firewall_text: str = ""
+    addresses: list[tuple[str, str]] | None = None     # (地址, 来源名)
+    address_error: str | None = None
+    ts_ip: str | None = None
+    ts_error: str | None = None
+    timings: dict[str, int] = field(default_factory=dict)
+    total_ms: int = 0
+
+    @property
+    def lan_ips(self) -> list[str] | None:
+        """标「局域网」的地址（10/192.168/172.16-31，排除 tailscale 的 100.x）。"""
+        if self.addresses is None:
+            return None
+        found: list[str] = []
+        for ip, _source in self.addresses:
+            if _is_lan_ip(ip) and ip not in found:
+                found.append(ip)
+        return found
+
+
+def parse_batch(text: str) -> dict | None:
+    raw = (text or "").strip()
+    if not raw.startswith("{"):
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _batch_addresses(items: object) -> tuple[list[tuple[str, str]] | None, str | None]:
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list):
+        return None, "网卡地址查询没有返回列表"
+    found: list[tuple[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        ip = _ipv4(str(item.get("ip") or ""))
+        if not ip or ip.startswith(("127.", "169.254.")):
+            continue
+        name = str(item.get("name") or "").strip()
+        kind = str(item.get("kind") or "").strip()
+        if not name:
+            name = {"Wireless80211": "WLAN", "Ethernet": "以太网"}.get(kind, kind or "网卡")
+        if all(ip != seen for seen, _ in found):
+            found.append((ip, name))
+    return found, None
+
+
+def _batch_ts(data: dict) -> tuple[str | None, str | None]:
+    for token in str(data.get("tailscale") or "").split():
+        found = _ipv4(token)
+        if found and not found.startswith("127."):
+            return found, None
+    reason = str(data.get("tailscale_error") or "").strip()
+    if reason:
+        return None, f"tailscale ip 查询失败：{reason}"
+    return None, "tailscale 没有返回可用的 IPv4 地址"
+
+
+def _timings(data: dict) -> dict[str, int]:
+    found: dict[str, int] = {}
+    for key, value in data.items():
+        if isinstance(key, str) and key.endswith("_ms"):
+            try:
+                found[key[:-3]] = int(value)
+            except (TypeError, ValueError):
+                continue
+    return found
+
+
+def _core_section(run: Runner, timeout: int) -> dict:
+    """跑那一个 PowerShell 脚本，返回解析好的 JSON（失败时返回带 error 的字典）。"""
+    result = run(core_command(), timeout=timeout)
+    if not result.ok:
+        return {"_error": _failure("进程与网卡查询失败", result)}
+    data = parse_batch(result.stdout)
+    if data is None:
+        return {"_error": "进程与网卡查询没有返回可解析的 JSON"}
+    return data
+
+
+def probe_all(port: int, tailscale: Path | str | None = None,
+              runner: Runner | None = None, timeout: int = BATCH_TIMEOUT,
+              proxy_runner: Runner | None = None,
+              firewall_runner: Runner | None = None,
+              tailscale_runner: Runner | None = None) -> RawProbe:
+    """一次完整探测：四条并行的原生/PS 查询，总耗时≈最慢那一路。
+
+    PowerShell 那一路只做「进程列表 + 网卡地址」（WMI 与 .NET 都要它），
+    两条 netsh 与 tailscale.exe 直接原生跑 —— 于是 2 个约 1.2s 的 PowerShell
+    冷启动被压成 1 个，其余的 0.1s 级查询互相重叠。
+    每段耗时都记在 timings 里（诊断包会打印出来），所以「为什么慢」不用猜。
+    """
+    started = time.monotonic()
+    run = runner or run_ps_cmd
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        ps_future = pool.submit(_core_section, run, timeout)
+        proxy_future = pool.submit(portproxy_text, proxy_runner)
+        firewall_future = pool.submit(netsh_firewall_state, port, firewall_runner)
+        ts_future = pool.submit(tailscale_ip_native, tailscale, tailscale_runner)
+        data = ps_future.result()
+        proxy, proxy_err = proxy_future.result()
+        firewall, firewall_err, firewall_raw = firewall_future.result()
+        ts_ip, ts_error = ts_future.result()
+    timings = _timings({k: v for k, v in data.items() if not k.startswith("_")})
+    core_error = data.get("_error")
+
+    processes, process_error = _process_pairs(data.get("node"))
+    if processes is None:
+        process_error = str(data.get("node_error") or "").strip() or process_error or core_error
+    addresses, address_error = _batch_addresses(data.get("addresses"))
+    if addresses is None:
+        address_error = str(data.get("addresses_error") or "").strip() or address_error or core_error
+    if ts_ip is None and addresses:
+        # 网卡里已经能看到 tailscale 的 100.x：tailscale.exe 没跑起来也不至于未知。
+        ts_ip = next((ip for ip, _source in addresses if ip.startswith("100.")), None)
+        if ts_ip:
+            ts_error = None
+
+    return RawProbe(
+        processes=processes,
+        process_error=None if processes is not None else (process_error or core_error),
+        portproxy_text=proxy,
+        portproxy_error=proxy_err,
+        firewall=firewall,
+        firewall_error=firewall_err,
+        firewall_text=firewall_raw,
+        addresses=addresses,
+        address_error=address_error,
+        ts_ip=ts_ip,
+        ts_error=None if ts_ip else ts_error,
+        timings=timings,
+        total_ms=int(round((time.monotonic() - started) * 1000)),
+    )

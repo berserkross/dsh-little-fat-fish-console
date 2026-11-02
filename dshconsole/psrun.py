@@ -82,6 +82,40 @@ def run_ps(script: Path, *args: str, timeout: int = 60, spawn: Spawn | None = No
     return execute(argv, timeout, spawn)
 
 
+def decode_native(raw: bytes) -> str:
+    """原生命令（netsh 等）的输出解码：控制台代码页随环境变，按 utf-8 → oem → mbcs 试。"""
+    for encoding in ("utf-8", "oem", "mbcs"):
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", "replace")
+
+
+def run_native(argv: list[str], timeout: int = 20, spawn: Spawn | None = None) -> PsResult:
+    """直接跑一个原生 EXE（netsh / tailscale），不经过 PowerShell：省掉一次约 1 秒的冷启动。
+
+    退出码非 0 不代表「没问到东西」——netsh 的「没有这条规则」就是非 0，
+    所以调用方要按 text + code 判断，不能只看 ok。
+    """
+    runner = spawn or subprocess.run
+    try:
+        done = runner(
+            argv, capture_output=True, text=False,
+            stdin=subprocess.DEVNULL, creationflags=_creationflags(), timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return PsResult(False, None, "", "", f"超时：{timeout} 秒内没有返回")
+    except FileNotFoundError:
+        return PsResult(False, None, "", "", f"找不到 {argv[0]}：系统里没有这个命令")
+    except OSError as exc:  # noqa: BLE001 - 启动失败一律归到这里
+        return PsResult(False, None, "", "", f"启动 {argv[0]} 失败：{exc}")
+    code = getattr(done, "returncode", None)
+    stdout = decode_native(getattr(done, "stdout", b"") or b"")
+    stderr = decode_native(getattr(done, "stderr", b"") or b"")
+    return PsResult(code == 0, code, stdout, stderr, None)
+
+
 def run_ps_cmd(command: str, timeout: int = 30, spawn: Spawn | None = None) -> PsResult:
     """-Command 执行一段 PowerShell；自动加 UTF-8 前置语句。"""
     argv = [SYSTEM_PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
