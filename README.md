@@ -6,10 +6,12 @@
 DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双击 exe 或运行脚本即可打开窗口，
 用来在本机启动 / 停止 DSH Web 服务、把服务临时开给手机访问、以及随时看状态。
 
-> **当前版本 2.0.0**（2026-11-03）：v1 的硬编码与登录信息泄露已全部修掉，并补齐托盘常驻、日志跟随、
-> 脱敏诊断包、串行命令队列与可发布构建（PE 版本信息 + PyInstaller onefile 打包）。
-> 产物 `dist\DSHConsole.exe` **未签名**，首次运行 Windows 会弹 SmartScreen「未知发布者」，
-> 点「更多信息 → 仍要运行」即可 —— 这是未签名 exe 的预期行为，签名方案见 `docs\build-and-signing.md`。
+> **当前版本 2.1.0**（2026-11-03）：v2 四个批次全部落地——可移植配置层、结构化探测与五态状态机、
+> 托盘常驻 / 日志跟随 / 脱敏诊断包 / 串行命令队列、可发布构建（PE 版本信息 + PyInstaller onefile），
+> 以及界面重排（状态大环 + 单主按钮 + ⋯ 抽屉 + 浮层）。
+> 发布产物**不附带 exe**（原样源码与构建命令见 `docs\build-and-signing.md`）。自己构建出的 exe 未签名时，
+> 首次运行 Windows 会弹 SmartScreen「未知发布者」，点「更多信息 → 仍要运行」即可；只想本机消除这条提示，
+> 可用 `scripts\sign-self-signed.ps1` 自签名 —— 那对本机有效、对别人的机器无效，见 `docs\self-signed-local.md`。
 
 ## 功能
 
@@ -119,8 +121,8 @@ py -3.11 -m pip install "pyinstaller>=6,<7"
 py -3.11 -m PyInstaller --noconfirm DSHConsole.spec
 ```
 
-产物是 **onefile** 的 `dist\DSHConsole.exe`（2.0.0 实测 32,151,698 B / 30.66 MiB，SHA256 见 Release 说明）。
-PE 版本资源由 `version_info.txt` 提供，资源管理器「属性 → 详细信息」能看到 `FileVersion 2.0.0.0`、
+产物是 **onefile** 的 `dist\DSHConsole.exe`（2.1.0 实测 32,172,230 B，签名后 32,179,368 B）。
+PE 版本资源由 `version_info.txt` 提供，资源管理器「属性 → 详细信息」能看到 `FileVersion 2.1.0.0`、
 `ProductName DSH 控制台（小肥鱼控制台）`、`CompanyName berserkross`。
 本机实测：Python 3.11.9 + PyInstaller 6.22.3，干净构建约 21 秒。
 

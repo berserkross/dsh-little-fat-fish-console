@@ -11,8 +11,8 @@
 | 项 | 实测值 |
 |---|---|
 | 产物路径 | `C:\Users\Ibash\Documents\Codex\apps\dsh-console\dist\DSHConsole.exe` |
-| 大小 | 32,151,698 B（30.66 MiB） |
-| SHA256 | `04700552D6835F521634D4B4531B409DC69AF925CC14152C03318FD05E5E85FD` |
+| 大小 | 未签名 32,172,230 B；自签名后 32,179,368 B（签名块约 +7 KB，每次签名略有浮动） |
+| SHA256 | 自签名后 `930956ABF15D410BBF0FA01C125CD0B6B00247FE8CF4570D91A0C5B7E5DB38CB`（同一份源码未签名时为 `3C3B70B7C270C7FA74CE225E53E8E798B011DD4EB366750029C2B86599783C9C`） |
 | 形态 | PyInstaller **onefile**（`dist\` 下只有这一个 exe，无 `_internal\` 目录；引导器 `runw.exe`） |
 | 界面子系统 | PE `subsystem=2`（GUI，双击不弹控制台窗） |
 | 结构 | `machine=0x8664`（x64）、7 个段、`.rsrc` 72,896 B |
@@ -21,8 +21,8 @@
 | 构建机 Python | 3.11.9（`MSC v.1938 64 bit`），命令用 `py -3.11` |
 | PyInstaller | 6.22.3 |
 | 构建耗时 | 20.7 秒（干净重建，`build/`+`dist/` 全删后） |
-| 版本资源 | `FileVersion 2.0.0.0` / `ProductVersion 2.0.0.0` / `CompanyName berserkross` |
-| 签名 | **未签名**（本机无代码签名证书，见第五节） |
+| 版本资源 | `FileVersion 2.1.0.0` / `ProductVersion 2.1.0.0` / `CompanyName berserkross` |
+| 签名 | 发布产物**不签名、也不随 Release 分发 exe**；本机构建可用 `scripts/sign-self-signed.ps1` 自签名（`Get-AuthenticodeSignature` → `Valid`，仅本机信任，见 [self-signed-local.md](self-signed-local.md)）。真实 CA 证书路径见第五节。 |
 
 `.rsrc` 从加版本资源之前的 71,912 B 长到 72,896 B（+984 B），与"版本资源确实写进去了"一致。
 

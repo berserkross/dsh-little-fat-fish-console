@@ -2,7 +2,7 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [2.1.0] - 2026-11-03
 
 v2 批次 D：视觉重排（方案 1「大环 + 抽屉」）—— 界面从「八颗按钮 + 常驻二维码」改成「一颗环、一颗主按钮、一个抽屉」。
 
@@ -20,12 +20,14 @@ v2 批次 D：视觉重排（方案 1「大环 + 抽屉」）—— 界面从「
 - 运行日志默认只显示末尾 15 行，右下角「展开全屏」开独立日志窗口；跟随、打码、2000 行截断自愈仍走同一份 `logtail` 链路。
 - 「关闭窗口时收进托盘 / 直接退出」从页脚布尔开关改成抽屉里的切换项，托盘行为不变。
 - `--selftest` 标记更新：保留 `qr / clear / adopt_shown / adopt_hidden / log_lines / trim / addresses`，新增 `ring / menu_items / overlay_open / overlay_closed / log_collapsed / log_expanded`。
-- 测试 189 → 203 例（新增 `tests/test_ui_theme.py`：五态视觉、尺寸常量、主按钮映射；`tests/test_gui_hooks.py` 补托盘退回普通窗口两条）。
+- 测试 189 → 208 例（新增 `tests/test_ui_theme.py`：五态视觉、尺寸常量、主按钮映射；`tests/test_widgets.py`：`snap_to_line` 五条替身用例；`tests/test_gui_hooks.py` 补托盘退回普通窗口两条）。
+- 日志卡从固定高度改成随窗口拉伸（15 行是下限，2000 行截断不变），底部不再留空带。
 
 ### 修复
 
 - Tk 9.0 下 `create_arc` 的 `extent` 取 360 或 359.9 会被归零、整圈画不出来；状态环封顶 359 度。
 - 150% DPI 下「⋯」抽屉按逻辑宽度定位会探出窗口右侧；改为画完后按实际像素宽度右对齐。
+- 全屏日志浮层顶部第一行常被切掉半行：自动换行的续行让 `index("@0,0")` 看不出错位，改用 `dlineinfo` 逐像素对齐（`dshconsole/widgets.py` 的 `snap_to_line`）。
 
 ## [2.0.0] - 2026-11-03
 
