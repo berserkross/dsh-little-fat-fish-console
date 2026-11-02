@@ -786,6 +786,17 @@ class ConsoleApp(ctk.CTk):
             live = row_index < rows
             holder.grid_rowconfigure(row_index, weight=1 if live else 0,
                                      uniform="grow" if live else "")
+        # 卡片只由 grid 定位（sticky="nw" 钉在单元格左上角），尺寸由
+        # _layout_group_cards() 直接写死 px —— 拉伸交给 grid 时跨 2 列的卡片会被摊上
+        # 多出来的 1~2 像素，三组同一列 chip 的右沿就会 441/442 混着。
+        span = GRID_SUBCOLS // columns
+        for index, card in enumerate(self._groups):
+            row, column = divmod(index, columns)
+            in_row = min(columns, len(self._groups) - row * columns)
+            alone = column == 0 and in_row == 1
+            card.grid(row=row, column=column * span,
+                      columnspan=GRID_SUBCOLS - column * span if alone else span,
+                      sticky="nw", padx=(GAP // 2, GAP // 2), pady=(0, 0))
         self._layout_group_cards()
         log_row = 4
         self._log_card.grid(row=log_row, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
