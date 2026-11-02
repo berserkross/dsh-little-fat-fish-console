@@ -1,4 +1,4 @@
-# DSH 控制台 · 构建、版本信息与签名
+# 小肥鱼控制台 · 构建、版本信息与签名
 
 > 状态：**已实测**（2026-11-03，批次 E）。本文件里的命令都在本机真跑过，产物数值是实测值，
 > 不是"计划中的命令"。签名一节的两条路径都是命令与验证方法，未持有真实 CA 证书，因此真实证书路径没有真签过。
@@ -76,7 +76,7 @@ exe = EXE(
 
 `version_info.txt` 用 UTF-8 编码（PyInstaller 读文件时按 BOM/encoding cookie 解码，文件里有
 `# -*- coding: utf-8 -*-`），字符串表用 `080404B0`（zh-CN + 码页 1200），所以中文产品名不会乱码 —— 实测
-`FileDescription` 读出来是 `DSH 控制台（小肥鱼控制台）`，`Language` 是 `简体中文(中国大陆)`。
+`FileDescription` 读出来是 `小肥鱼控制台`，`Language` 是 `简体中文(中国大陆)`。
 
 产物名用 ASCII 的 `DSHConsole.exe` 而不是中文名：命令行、CI 与签名脚本引用时不用带引号、不用处理
 代码页；中文产品名由 `ProductName` / `FileDescription` 与窗口标题体现（资源管理器"详细信息"里看得到）。
@@ -94,7 +94,7 @@ exe = EXE(
 FileVersion     : 2.0.0.0
 ProductVersion  : 2.0.0.0
 CompanyName     : berserkross
-FileDescription : DSH 控制台（小肥鱼控制台）
+FileDescription : 小肥鱼控制台
 LegalCopyright  : MIT License · Copyright (c) 2026 YANG TIANRUI
 ```
 

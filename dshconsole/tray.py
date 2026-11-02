@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 
-TITLE = "DSH 控制台"
+TITLE = "小肥鱼控制台"
 
 
 def available() -> tuple[bool, str | None]:

@@ -1,4 +1,4 @@
-"""DSH 控制台 - DeepSeek Harness 桌面图形界面 (customtkinter · 蓝鲸主题)
+"""小肥鱼控制台 - DeepSeek Harness 桌面图形界面 (customtkinter · 蓝鲸主题)
 
 双击 exe / 运行本脚本即可打开窗口。功能与旧版一致：
   启动 Harness、开启手机访问（端口转发+信任来源）、恢复本机、复制手机地址、
@@ -25,12 +25,15 @@ from PIL import Image
 from dshconsole import (addresses, adopt, config, diagnostics, errors, logtail, probe,
                         psrun, resources, single, snapshot, status, tasks, textutil, tray,
                         ui_theme, widgets)
-from dshconsole.ui_theme import (AMBER, AMBER_DARK, BG, BORDER, CARD, CARD2, CYAN, DIM, PHASE_WORD,
-                                 DRAWER_WIDTH, FAINT, FONT, GREEN, GREEN_DARK, GREY,
-                                 GREY_DARK, LOG_LINE_PX, LOG_ROWS_COLLAPSED, MONO,
-                                 PHASE_STYLE, PRIMARY, PRIMARY_HOVER, RED, RED_DARK,
-                                 RING_SIZE, SLATE, SLATE_DARK, TEAL, TEAL_DARK, TEXT,
-                                 VIOLET, VIOLET_DARK, WHITE_PANEL)
+from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BADGE_SIZE, BG, BORDER,
+                                 BORDER_STRONG, CARD, CARD2, CARD3, CARD_RADIUS, CHIP,
+                                 CHIP_HOVER, CHIP_RADIUS, CYAN, DIM, EMPTY_LOG_HINT, FAINT,
+                                 FONT, GAP, GREEN, GRID_BTN_H, GRID_PAD, HEADER_H, HERO_SIZE,
+                                 LOG_LINE_PX, LOG_ROWS_EMPTY, LOG_ROWS_MAX, LOG_ROWS_MIN,
+                                 LOG_TEXT, MONO, PAD, PANEL_DEEP, PHASE_STYLE, PHASE_WORD,
+                                 PRIMARY, PRIMARY_GLOW, PRIMARY_HOVER, PRIMARY_RADIUS, RED,
+                                 RED_DARK, SLATE, SLATE_DARK, TEXT, WINDOW_ALPHA, WINDOW_MIN,
+                                 WINDOW_SIZE, grid_columns, log_rows, log_rows_with_empty)
 
 CFG = config.resolve()          # 本机探测结果；缺项为 None，探测失败不抛异常
 HARNESS = CFG.harness
@@ -40,7 +43,7 @@ TOKEN_LOG = CFG.token_log
 ICON_FILE = resources.icon_path()
 CREATE_NO_WINDOW = 0x08000000      # 自检里伪造进程时别闪出控制台窗口
 PORT = CFG.port
-APP_TITLE = "DSH 控制台"            # 单实例守卫靠窗口标题找回已有窗口，两处必须一致
+APP_TITLE = "小肥鱼控制台"          # 单实例守卫靠窗口标题找回已有窗口，两处必须一致
 _APP = None                        # 当前窗口实例：未捕获异常写日志用（见 _report）
 MAX_LOG_LINES = 2000               # 日志框行数上限：超过就从顶部滚动丢弃旧行
 LOG_POLL_INTERVAL = 0.4            # 跟随真实日志的轮询间隔（秒，≥0.3，不许 busy loop）
@@ -64,6 +67,42 @@ def primary_action(phase) -> tuple[str, str, str, str]:
     if phase is status.Phase.UNKNOWN:
         return "重新探测", "refresh", SLATE, SLATE_DARK
     return "停止 DSH", "stop", RED, RED_DARK      # 启动中 / 运行中
+
+
+# 功能网格：三组语义分组，组内每项一颗按钮。全部平铺在首屏 —— 没有「⋯ 更多」，
+# 也没有抽屉；用户的原话是「主要功能全折叠了根本找不到」。
+# 顺序按「先做什么」排：服务最常用放第一组，手机访问其次，工具与退出最后。
+# 每项是 (图标, 文案, 回调名)：图标用 BMP 符号（▶ ■ ↻ ⚙ ▦ ⧉ ⌂ ⇄ ↺ ⤓ ⏸ ✕ ⊗ ⏻），
+# 微软雅黑 UI 与系统符号字体都覆盖得到，不额外打包图标文件。
+# 「启动 DSH / 停止 DSH」不在这里：启停只留主按钮那一颗（见 primary_action），
+# 同一个动作有两个入口时，用户得先判断该点哪个 —— 服务组只管重启/刷新/换端口这类
+# 「不该有第二次确认」的从属动作。
+ACTION_GROUPS: tuple = (
+    ("服务", (
+        ("↻", "重启 DSH", "on_restart"),
+        ("◌", "刷新状态", "on_refresh"),
+        ("⚙", "切换 Web 端口…", "on_change_port"),
+    )),
+    ("手机访问", (
+        ("▦", "手机访问二维码", "on_phone_access"),
+        ("⧉", "复制手机访问地址", "on_copy"),
+        ("⌂", "复制本机地址", "on_copy_local"),
+        ("⇄", "开启手机访问（UAC）", "on_phone_on"),
+        ("↺", "恢复本机模式（UAC）", "on_phone_off"),
+    )),
+    ("工具", (
+        ("⤓", "导出诊断包", "on_export_diag"),
+        ("⏸", "暂停日志跟随", "on_toggle_log_follow"),
+        ("✕", "关闭窗口时：收进托盘", "on_toggle_close_mode"),
+        ("⊗", "取消排队", "on_cancel_queue"),
+        ("⏻", "退出程序", "_quit"),
+    )),
+)
+
+# 列骨架：窗口上来就切 6 个等宽子列，3/2/1 列布局各自按 2/3/6 跨列，永远吃满宽度。
+GRID_SUBCOLS = 6
+# 按钮悬停时的泛光亮边：品牌蓝混进按钮底色，既提亮又不抢戏。
+CHIP_EDGE = widgets.blend(PRIMARY_GLOW, CHIP, 0.5)
 
 
 def _font(size: int, bold: bool = False) -> ctk.CTkFont:
@@ -193,19 +232,25 @@ class ConsoleApp(ctk.CTk):
         super().__init__()
         self.title(APP_TITLE)
         self._set_icon()
-        self.geometry("660x800")
-        self.minsize(620, 720)
+        self.geometry("%dx%d" % WINDOW_SIZE)
+        self.minsize(*WINDOW_MIN)
         self.configure(fg_color=BG)
+        # 整窗 alpha=1.0：玻璃改为「画」出来（衬底渐变 + 近实心卡面 + 亮边 + 柔影），
+        # 桌面内容一律不参与成像 —— 上一轮 0.96 让浏览器里的字在卡片背后读得出来。
+        try:
+            self.attributes("-alpha", WINDOW_ALPHA)
+        except Exception:      # noqa: BLE001 - 无合成器（远程桌面 / 极简 WM）
+            pass
         self._qr_photo = None
         self._qr_overlay: widgets.QrOverlay | None = None
         self._log_overlay: widgets.LogOverlay | None = None
-        self._drawer: widgets.DrawerMenu | None = None
-        self._log_rows = LOG_ROWS_COLLAPSED      # 日志区露几行（要更多走浮层）
-        self._log_follow = True                  # 日志跟随开关，从「⋯」里切
+        self._log_rows = LOG_ROWS_MIN           # 日志区露几行（按内容长，要更多走浮层）
+        self._log_follow = True                  # 日志跟随开关，网格里同一颗按钮切
         self._primary_name = "start"             # 主按钮当前绑的回调名
         self._token: str | None = None
         self._candidates: list[adopt.Candidate] = []   # 端口被占用时查到的别的 DSH 进程
         self._adopt_shown = False
+        self._last_net = ""                     # 上次写进日志的网络行，避免重复刷屏
         self._last_status: status.Status | None = None  # 上次探测结果：刷新时先显示它
         self._last_raw = None                          # 上次的原始探测数据，只给诊断包用
         # 可注入的探测口：自检用替身，不再改写模块全局（B2-3）
@@ -336,12 +381,31 @@ class ConsoleApp(ctk.CTk):
             pass
 
     def _sync_close_hint(self) -> None:
-        """页脚只留一行当前行为（开关本体搬进「⋯」抽屉，底栏不再挤两个控件）。"""
+        """底栏一行当前行为；网格里那颗开关的文案跟着一起变（开关本体在网格里）。"""
         text = "关闭按钮：收进托盘" if self._close_to_tray else "关闭按钮：退出程序"
         try:
             self.lbl_close_hint.configure(text=text)
         except Exception:      # noqa: BLE001 - 控件替身/未建好
             pass
+        self._sync_group_labels()
+
+    def _sync_group_labels(self) -> None:
+        """两颗带状态的开关按钮，文案对齐当前状态（网格里只有它们会变）。"""
+        buttons = getattr(self, "_group_buttons", None) or {}
+        pairs = (
+            ("on_toggle_log_follow",
+             "暂停日志跟随" if self._log_follow else "恢复日志跟随"),
+            ("on_toggle_close_mode",
+             "关闭窗口时：收进托盘" if self._close_to_tray else "关闭窗口时：退出程序"),
+        )
+        for name, text in pairs:
+            button = buttons.get(name)
+            if button is None:
+                continue
+            try:
+                button.configure(text=text)
+            except Exception:      # noqa: BLE001 - 控件替身
+                pass
 
     def on_toggle_close_mode(self) -> None:
         """一键在「关闭收进托盘」与「关闭即退出」之间切换，并写回 config.json。"""
@@ -363,8 +427,8 @@ class ConsoleApp(ctk.CTk):
         self._sync_close_hint()
 
     def _close_overlays(self) -> None:
-        """收起抽屉与浮层，并释放二维码的内存引用（不产生任何文件）。"""
-        for attr in ("_qr_overlay", "_log_overlay", "_drawer"):
+        """收起浮层，并释放二维码的内存引用（不产生任何文件）。"""
+        for attr in ("_qr_overlay", "_log_overlay"):
             layer = getattr(self, attr, None)
             if layer is None:
                 continue
@@ -404,6 +468,9 @@ class ConsoleApp(ctk.CTk):
             pass
 
     def _set_icon(self) -> None:
+        """标题栏图标：自绘 logo（PNG）优先，缺失回退仓库里的 .ico。"""
+        if widgets.apply_window_icon(self):
+            return
         candidates = _icon_candidates()
         for ico in candidates:
             try:
@@ -414,107 +481,495 @@ class ConsoleApp(ctk.CTk):
                 pass
 
     # ---------------- UI ----------------
+    # ---------------- 主界面 ----------------
+    # 六段式单列信息流，全部直接 grid 在窗口上，不套中间容器：容器会把窗口底色铺满，
+    # 玻璃背景板就透不出来了 —— 间隙必须留在窗口自己身上。
+    # 列骨架固定 GRID_SUBCOLS 个等宽子列：3 列组卡各占 2 个、2 列各占 3 个、1 列占满 6 个，
+    # 任何宽度下组卡都吃得满宽度，右边不会留一块洞。
     def _build(self) -> None:
-        """大环 + 抽屉：一颗状态环、一颗主按钮、其余操作收进「⋯」，日志只露末尾 15 行。"""
-        # --- 头部：鲸鱼娘 + 标题 +「⋯」 ---
-        head = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
-                            border_width=1, border_color=BORDER)
-        head.pack(fill="x", padx=14, pady=(14, 8))
-        mascot = mascot_image()
-        if mascot is not None:
-            ctk.CTkLabel(head, text="", image=ctk.CTkImage(light_image=mascot, dark_image=mascot, size=(56, 56))).pack(side="left", padx=(16, 12), pady=12)
-        title_box = ctk.CTkFrame(head, fg_color="transparent")
-        title_box.pack(side="left", pady=10)
-        ctk.CTkLabel(title_box, text="DeepSeek Harness 控制台", font=_font(17, True),
-                     text_color=TEXT, anchor="w").pack(anchor="w")
-        ctk.CTkLabel(title_box, text="本地入口 · 手机访问管理", font=_font(11),
-                     text_color=DIM, anchor="w").pack(anchor="w")
-        # 抽屉入口：应用内菜单。托盘右键菜单是 Host 语义，两者互不复用。
-        self.btn_menu = ctk.CTkButton(head, text="⋯", width=40, height=34, corner_radius=10,
-                                      fg_color=CARD2, hover_color="#1D2D55", text_color=TEXT,
-                                      font=_font(18, True), cursor="hand2",
-                                      command=self._open_drawer)
-        self.btn_menu.pack(side="right", padx=(8, 16))
+        """头部 → 主操作 → 条件槽 → 功能网格 → 常驻日志 → 底栏。
 
-        # --- 状态卡片：状态环 + 右侧文字 ---
-        card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
-                            border_width=1, border_color=BORDER)
-        card.pack(fill="x", padx=14, pady=6)
-        row = ctk.CTkFrame(card, fg_color="transparent")
-        row.pack(fill="x", padx=14, pady=(12, 6))
-        self.ring = widgets.StatusRing(row, bg=CARD)
-        self.ring.pack(side="left")
-        side = ctk.CTkFrame(row, fg_color="transparent")
-        side.pack(side="left", fill="both", expand=True, padx=(16, 0))
-        wrap = 330
-        self.lbl_service = ctk.CTkLabel(side, text="服务状态：--", font=_font(12, True),
-                                        text_color=FAINT, anchor="w", justify="left",
-                                        wraplength=wrap)
-        self.lbl_service.pack(fill="x")
-        self.lbl_phone = ctk.CTkLabel(side, text="手机访问：--", font=_font(12, True),
-                                      text_color=FAINT, anchor="w", justify="left",
-                                      wraplength=wrap)
-        self.lbl_phone.pack(fill="x", pady=(6, 0))
-        self.lbl_net = ctk.CTkLabel(side, text="网络：--", font=_font(11),
-                                    text_color=DIM, anchor="w", justify="left",
-                                    wraplength=wrap)
-        self.lbl_net.pack(fill="x", pady=(6, 0))
-        # 采纳按钮：只有「异常（端口被占用）且查到占用者」时才 pack 出来（见 _sync_adopt_button）
+        只有日志区有权拉伸（它的那一行 weight=1），窗口变高是日志变高，
+        功能网格和主操作永远不会被挤掉。
+        """
+        for index in range(GRID_SUBCOLS):
+            self.grid_columnconfigure(index, weight=1, uniform="col")
+        self._columns = 0
+        self._groups: list = []
+        self._group_buttons: dict = {}
+        self._panels: dict = {}
+        self._glass_job = None
+        self._badge_base = ""
+        self._badge_photo = None
+        self._log_empty = True
+        # 玻璃背景板先建，之后建的控件自然叠在它上面（Tk 的叠放顺序 = 创建顺序）。
+        self._backdrop = widgets.GlassBackdrop(self)
+        self._backdrop.place(x=0, y=0, relwidth=1, relheight=1)
+        self._build_header()
+        self._build_primary()
+        self._build_adopt()
+        self._build_grid()
+        self._build_log()
+        self._build_foot()
+        self._sync_group_labels()
+        self._sync_log_rows()
+        self._sync_log_empty()
+        self.bind("<Configure>", self._on_resize)
+        self.after(60, self._schedule_glass)
+
+    def _px(self, value: float) -> int:
+        """逻辑像素 → 实际像素：150% 下截图里才不会把徽章与插画缩成一小坨。"""
+        try:
+            scale = self._get_window_scaling() or 1.0
+        except Exception:      # noqa: BLE001 - 控件替身
+            scale = 1.0
+        return max(1, int(round(value * scale)))
+
+    def _build_header(self) -> None:
+        """头部：鲸鱼娘圆形玻璃徽章 + 标题 + 状态（灯/状态词/PID·端口），右端手机访问模式。"""
+        header = ctk.CTkFrame(self, fg_color=CARD, corner_radius=CARD_RADIUS, height=HEADER_H)
+        header.grid(row=0, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
+                    padx=PAD, pady=(PAD, 0))
+        header.grid_propagate(False)
+        header.grid_columnconfigure(2, weight=1)   # 弹性空列：把手机访问那块顶到右端
+        # 两行都给 weight：多余的 24px 上下均分，徽章在 88px 的框里正好居中
+        # （上一轮行高合计 68 > 头部 64，父框把玻璃圆盘的下弧裁掉了）。
+        header.grid_rowconfigure(0, weight=1)
+        header.grid_rowconfigure(1, weight=1)
+        self._panels["header"] = header
+        size = self._px(BADGE_SIZE)
+        # corner_radius=size//2：底盘的四角跟面板同色，圆图之外不留方块
+        self._badge_label = ctk.CTkLabel(header, text="", fg_color=CARD, width=size,
+                                         height=size, corner_radius=size // 2)
+        self._badge_label.grid(row=0, column=0, rowspan=2, padx=(11, 12), pady=0)
+        ctk.CTkLabel(header, text=APP_TITLE, font=_font(13, True), text_color=TEXT,
+                     anchor="w").grid(row=0, column=1, columnspan=2, sticky="w", pady=(10, 0))
+        line = ctk.CTkFrame(header, fg_color=CARD)
+        line.grid(row=1, column=1, sticky="w", pady=(0, 10))
+        self.lamp = widgets.StatusLamp(line, bg=CARD)
+        self.lamp.pack(side="left", padx=(0, 7))
+        self.lbl_service = ctk.CTkLabel(line, text=PHASE_WORD[status.Phase.UNKNOWN],
+                                        font=_font(15, True), text_color=TEXT, anchor="w")
+        self.lbl_service.pack(side="left")
+        # PID 与端口用等宽字体：数字在状态变化时不左右跳。
+        self.lbl_detail = ctk.CTkLabel(line, text="PID — · 端口 —", font=_mono(11),
+                                       text_color=DIM, anchor="w")
+        self.lbl_detail.pack(side="left", padx=(12, 0))
+        self.lbl_phone = ctk.CTkLabel(header, text="手机访问：—", font=_font(12),
+                                      text_color=FAINT, anchor="e")
+        self.lbl_phone.grid(row=0, column=3, rowspan=2, sticky="e", padx=(10, 14))
+        self.lamp.set_status(status.Phase.UNKNOWN)
+
+    def _build_primary(self) -> None:
+        """主操作：通栏一颗，位置永远固定（第 2 行整行），宽度不随状态跳。
+
+        启动/停止只留这一颗 —— 功能网格里的同名按钮已经删掉，同一个动作不再有两个入口。
+        """
+        self.btn_primary = ctk.CTkButton(
+            self, text="启动 DSH", command=self._run_primary, height=ACTION_H,
+            corner_radius=PRIMARY_RADIUS, font=_font(15, True), fg_color=PRIMARY,
+            hover_color=PRIMARY_HOVER, text_color="#FFFFFF", border_width=2,
+            border_color=PRIMARY, cursor="hand2")
+        self.btn_primary.grid(row=1, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
+                              padx=PAD, pady=(GAP, 0))
+        self._glow_hover(self.btn_primary)
+
+    def _glow_hover(self, button) -> None:
+        """悬停泛光：CTk 没有外发光，用 2px 亮边提亮代理（不动几何，不会跳）。"""
+        def enter(_event=None) -> None:
+            try:
+                button.configure(border_color=CHIP_EDGE)
+            except Exception:      # noqa: BLE001 - 已销毁
+                pass
+
+        def leave(_event=None) -> None:
+            try:
+                button.configure(border_color=button.cget("fg_color"))
+            except Exception:      # noqa: BLE001
+                pass
+
+        button.bind("<Enter>", enter, add="+")
+        button.bind("<Leave>", leave, add="+")
+
+    def _build_adopt(self) -> None:
+        """条件槽：异常时冒出「改为控制运行中的实例」，正常时整行收成 0 高。"""
+        self._slot = ctk.CTkFrame(self, fg_color=CARD, height=0)
+        self._slot.grid(row=2, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
+                        padx=PAD, pady=(6, 0))
+        self._slot.grid_propagate(False)
+        self._slot.grid_rowconfigure(0, weight=1)
+        self._slot.grid_columnconfigure(0, weight=1)
         self.btn_adopt = ctk.CTkButton(
-            card, text="改为控制运行中的实例", command=self.on_adopt,
-            fg_color=VIOLET, hover_color=VIOLET_DARK, text_color="#FFFFFF",
-            font=_font(12, True), height=36, corner_radius=10, cursor="hand2")
-        # 队列说明：排队/执行中的状态写在这里，按钮本身从不禁用（C5）
-        self.lbl_queue = ctk.CTkLabel(card, text="", font=_font(11), text_color=DIM,
-                                      anchor="w", justify="left")
-        self.lbl_queue.pack(fill="x", padx=14, pady=(0, 10))
+            self._slot, text="改为控制运行中的实例", command=self.on_adopt,
+            fg_color=CARD2, hover_color=CARD3, text_color=TEXT, border_width=1,
+            border_color=BORDER_STRONG, font=_font(12, True), height=GRID_BTN_H - 2,
+            corner_radius=CHIP_RADIUS, cursor="hand2")
 
-        # --- 主按钮：只有一颗，文案与颜色随状态换 ---
-        self.btn_primary = ctk.CTkButton(self, text="启动 DSH", command=self._run_primary,
-                                         height=52, corner_radius=12, font=_font(15, True),
-                                         fg_color=PRIMARY, hover_color=PRIMARY_HOVER,
-                                         text_color="#FFFFFF", cursor="hand2")
-        self.btn_primary.pack(fill="x", padx=14, pady=(8, 4))
+    def _build_grid(self) -> None:
+        """功能网格：三组语义分组，组内 2 列按钮，列宽可测量且三组一致。
 
-        # --- 日志卡片：15 行是下限不是上限，窗口更高就多露几行（行数上限仍由 2000 行裁剪切控制） ---
-        log_card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14,
-                                border_width=1, border_color=BORDER)
-        log_card.pack(fill="both", expand=True, padx=14, pady=(6, 8))
-        log_head = ctk.CTkFrame(log_card, fg_color="transparent")
-        log_head.pack(fill="x", padx=14, pady=(10, 4))
-        ctk.CTkLabel(log_head, text="运行日志", font=_font(12, True),
-                     text_color=TEXT, anchor="w").pack(side="left")
-        ctk.CTkButton(log_head, text="展开全屏", width=84, height=26, corner_radius=8,
-                      fg_color=CARD2, hover_color="#1D2D55", text_color=TEXT,
-                      font=_font(11), cursor="hand2",
+        三张组卡放在同一个容器里（容器左右内缩 PAD-GAP//2，每张卡左右各留 GAP//2）：
+        于是每张卡的宽度都等于「列宽 - GAP」，卡间距是 GAP，最外侧仍是 PAD —— 三组卡
+        等宽是构造出来的，不是碰巧对上的。
+        """
+        holder = ctk.CTkFrame(self, fg_color=BG)
+        self._grid_holder = holder
+        for index in range(GRID_SUBCOLS):
+            holder.grid_columnconfigure(index, weight=1, uniform="grp")
+        # 三张组卡由 _layout_group_cards() 用 place 摆放：卡宽必须严格相等，
+        # 交给 grid 的 uniform 分列时余下的 1~2 像素会被 Tk 摊给某几列，
+        # 同一列的 chip 右沿就会 441/442 混着。重摆由根窗口的 <Configure> 驱动 ——
+        # CTkFrame.bind 只把回调挂到内部 canvas 上，容器自己的 <Configure> 一次都不会来。
+
+        # 三组按钮行数取最大值（手机访问 5 项 = 3 行）：行数少的组把多出来的一行留白，
+        # 于是同一窗口里每颗 chip 的高度处处相同 —— 否则「服务」2 行会被拉成「手机访问」
+        # 3 行的 1.5 倍高，看着像两种控件。
+        self._grid_rows_max = max(max(1, (len(entries) + 1) // 2)
+                                  for _title, entries in ACTION_GROUPS)
+        for group_index, (title, entries) in enumerate(ACTION_GROUPS):
+            card = ctk.CTkFrame(holder, fg_color=CARD, corner_radius=CARD_RADIUS)
+            # 组卡不跟内容要宽度：否则「开启手机访问（UAC）」这类长文案会把中间那张卡
+            # 顶宽 22px，三组列宽就对不齐了。宽度完全由等宽列决定，内容只影响高度。
+            card.grid_propagate(False)
+            card.configure(height=self._px(
+                30 + self._grid_rows_max * (GRID_BTN_H + GRID_PAD)))
+            card.grid_columnconfigure(0, weight=1, uniform="chip")
+            card.grid_columnconfigure(1, weight=1, uniform="chip")
+            ctk.CTkLabel(card, text=title, font=_font(11, True), text_color=FAINT,
+                         anchor="w").grid(row=0, column=0, columnspan=2, sticky="ew",
+                                          padx=12, pady=(9, 6))
+            for index, (icon, text, name) in enumerate(entries):
+                row, column = divmod(index, 2)
+                # 末行只剩一项 → 通栏：不留半行空洞
+                alone = column == 0 and index == len(entries) - 1
+                button = ctk.CTkButton(
+                    card, text=f"{icon}  {text}", height=GRID_BTN_H,
+                    corner_radius=CHIP_RADIUS, fg_color=CHIP, hover_color=CHIP_HOVER,
+                    text_color=TEXT, border_width=1, border_color=BORDER,
+                    # 11 号而非 12 号：3 列布局下片宽约 135 逻辑像素，最长文案
+                    # 「关闭窗口时：收进托盘」在 12 号时会溢出裁掉末字。
+                    font=_font(11), anchor="w", cursor="hand2",
+                    command=getattr(self, name))
+                button.grid(row=row + 1, column=column,
+                            columnspan=2 if alone else 1, sticky="nsew",
+                            padx=(10, 10) if alone else (10, 5) if column == 0 else (5, 10),
+                            pady=(0, GRID_PAD))
+                card.grid_rowconfigure(row + 1, weight=1, uniform="chiprow")
+                self._glow_hover(button)
+                self._group_buttons[name] = button
+            # 空行也参与分配并共用 uniform：三组永远是同样多的行、行高相同，
+            # 于是三组 chip 的高度处处一致（不会出现某组按钮被拉高一截）。
+            for spare in range(len(entries) // 2 + 1, self._grid_rows_max + 1):
+                card.grid_rowconfigure(spare, weight=1, uniform="chiprow")
+            self._groups.append(card)
+            self._panels["group%d" % group_index] = card
+
+    def _build_log(self) -> None:
+        """常驻日志：高度 = clamp(实际行数, 6, 26) 行，不再吸收剩余高度。
+
+        剩余高度归三组卡那一行（root 第 3 行 weight=1）。日志卡自身只占「抬头 + 正文」，
+        所以「4 行日志 + 40% 空区」这种场面不会再有：行数少，这一块就矮。
+        """
+        card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=CARD_RADIUS)
+        self._log_card = card
+        self._panels["log"] = card
+        card.grid_columnconfigure(0, weight=1)
+        head = ctk.CTkFrame(card, fg_color=CARD)
+        head.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 5))
+        ctk.CTkLabel(head, text="运行日志", font=_font(12, True), text_color=TEXT,
+                     anchor="w").pack(side="left")
+        # 队列的即时说明是标题的注脚，贴着标题放，不单独占一行。
+        self.lbl_queue = ctk.CTkLabel(head, text="", font=_font(11), text_color=DIM, anchor="w")
+        self.lbl_queue.pack(side="left", padx=(10, 0))
+        ctk.CTkButton(head, text="展开全屏", width=78, height=24, corner_radius=8,
+                      fg_color=CHIP, hover_color=CHIP_HOVER, text_color=DIM,
+                      border_width=1, border_color=BORDER, font=_font(11), cursor="hand2",
                       command=self.on_expand_log).pack(side="right")
-        self.lbl_log_hint = ctk.CTkLabel(log_head, text=f"仅显示末尾 {self._log_rows} 行",
-                                         font=_font(11), text_color=FAINT, anchor="e")
+        self.lbl_log_hint = ctk.CTkLabel(head, text="", font=_font(11), text_color=FAINT,
+                                         anchor="e")
         self.lbl_log_hint.pack(side="right", padx=(0, 10))
-        self.log = ctk.CTkTextbox(log_card, height=self._log_rows * LOG_LINE_PX,  # 15 行＝下限
-                                  fg_color="#0A1226", text_color="#C7D3EA", font=_mono(12),
-                                  corner_radius=10, border_width=1, border_color=BORDER,
-                                  wrap="word", state="disabled")
-        self.log.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.log = ctk.CTkTextbox(card, height=self._log_rows * LOG_LINE_PX,
+                                  fg_color=PANEL_DEEP, text_color=LOG_TEXT, font=_mono(12),
+                                  corner_radius=10, border_width=0, wrap="word",
+                                  state="disabled")
+        # sticky="ew" 而不是 "nsew"：正文不许再被父格拉高，高度只由行数决定
+        self.log.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        self._harden_log_text()
+        # 空态：同一格里盖一张插画 + 一句提示。素材缺失时 widgets 已经回退成矢量鲸鱼，
+        # 所以这里永远有图形可看，不会出现「图片加载失败」的空框。
+        self._empty = ctk.CTkFrame(card, fg_color=PANEL_DEEP, corner_radius=10)
+        self._empty.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        self._empty.grid_columnconfigure(0, weight=1)
+        self._empty.grid_rowconfigure(0, weight=1)
+        self._empty.grid_rowconfigure(3, weight=1)
+        hero_px = self._px(HERO_SIZE)
+        self._hero_photo = ctk.CTkImage(light_image=widgets.hero_picture(hero_px, PANEL_DEEP),
+                                        dark_image=widgets.hero_picture(hero_px, PANEL_DEEP),
+                                        size=(hero_px, hero_px))
+        ctk.CTkLabel(self._empty, text="", image=self._hero_photo,
+                     fg_color=PANEL_DEEP).grid(row=1, column=0, pady=(0, 0))
+        ctk.CTkLabel(self._empty, text=EMPTY_LOG_HINT, font=_font(12), text_color=DIM,
+                     fg_color=PANEL_DEEP, justify="center").grid(row=2, column=0, pady=(8, 0))
 
-        # --- 底栏 ---
-        foot = ctk.CTkFrame(self, fg_color="transparent")
-        foot.pack(fill="x", padx=14, pady=(0, 12))
-        ctk.CTkLabel(foot, text=f"本机：http://127.0.0.1:{PORT}", font=_font(11),
-                     text_color=DIM, anchor="w").pack(side="left")
-        # 关闭行为只显示一行字，切换开关在「⋯」里（把用户锁死在托盘里不可接受）
-        self.lbl_close_hint = ctk.CTkLabel(foot, text="", font=_font(11),
-                                           text_color=DIM, anchor="e")
-        self.lbl_close_hint.pack(side="right", padx=(8, 0))
-        ctk.CTkButton(foot, text="复制本机地址", command=self.on_copy_local, width=110,
-                      height=28, corner_radius=8, fg_color=CARD2, hover_color="#1D2D55",
-                      text_color=TEXT, font=_font(11), cursor="hand2").pack(side="right")
+
+    def _harden_log_text(self) -> None:
+        """把日志框的三种系统选中色钉死到调色板，并让选中区不参与剪贴板同步。
+
+        上一轮截图在正文下沿有一条全宽 (0,115,208) 的蓝带 —— 那是 Tk Text 的**系统**
+        选中背景（Windows 高亮色）透出来的：末行一旦被选中，选中区会铺满控件宽度。
+        这里把 selectbackground / selectforeground / inactiveselectbackground 全换成
+        主题色，insertwidth 归零（没有闪烁的插入光标），exportselection=False（焦点离开
+        时不会保留高亮选区），并在每次写日志后主动清掉可能残留的 "sel" 标签。
+        """
+        try:
+            inner = self.log._textbox
+            inner.configure(selectbackground=CARD3, selectforeground=TEXT,
+                            inactiveselectbackground=CARD2, exportselection=False,
+                            insertwidth=0, insertbackground=LOG_TEXT, takefocus=0,
+                            highlightthickness=0, borderwidth=0)
+        except Exception:      # noqa: BLE001 - 控件替身 / CTk 内部结构变了
+            return
+        self._clear_log_selection()
+
+    def _clear_log_selection(self) -> None:
+        """清掉日志里的选中区：截图里那条蓝带就是它铺满整行造成的。"""
+        try:
+            self.log.tag_remove("sel", "1.0", "end")
+        except Exception:      # noqa: BLE001 - 控件替身 / 已销毁
+            pass
+
+    def _build_foot(self) -> None:
+        """底栏：本机入口 + 关闭按钮当前行为。做成一条玻璃条，不再是两截悬空的字。"""
+        foot = ctk.CTkFrame(self, fg_color=CARD, corner_radius=CARD_RADIUS)
+        self._foot = foot
+        self._panels["foot"] = foot
+        ctk.CTkLabel(foot, text="本机", font=_font(11), text_color=FAINT).pack(
+            side="left", padx=(12, 6), pady=7)
+        ctk.CTkLabel(foot, text="http://127.0.0.1:%d" % PORT, font=_mono(11),
+                     text_color=DIM).pack(side="left")
+        self.lbl_close_hint = ctk.CTkLabel(foot, text="", font=_font(11), text_color=FAINT,
+                                           anchor="e")
+        self.lbl_close_hint.pack(side="right", padx=(0, 12))
         self._sync_close_hint()
 
+    # ---------------- 玻璃底图 / 重排 ----------------
+    def _on_resize(self, event) -> None:
+        """窗口尺寸变了：先重排列数（列数没变就什么都不做），再防抖重绘玻璃底图。"""
+        if event.widget is not self:
+            return
+        self._reflow(event.width)
+        # 列数没变时 _reflow 会早退，但卡宽/卡高仍要跟着容器走 —— 每次 Configure 都摆一遍；
+        # 同一个 Configure 里容器尺寸可能还没结算，等空闲再摆一次收口。
+        self._layout_group_cards()
+        self.after_idle(self._layout_group_cards)
+        self._schedule_glass()
+
+    def _reflow(self, width_px: int) -> None:
+        """按可用宽度把三组卡片摆成 3 / 2 / 1 列，并把日志与底栏挪到卡片下方。"""
+        try:
+            scale = self._get_window_scaling() or 1.0
+        except Exception:      # noqa: BLE001 - 控件替身 / 窗口已销毁
+            scale = 1.0
+        columns = grid_columns(width_px / scale)
+        if columns == self._columns:
+            return
+        self._columns = columns
+        rows = max(1, (len(self._groups) + columns - 1) // columns)
+        holder = self._grid_holder
+        # 容器左右内缩 PAD-GAP//2、每张卡左右各 GAP//2：卡宽 = 列宽 - GAP（三组严格等宽），
+        # 卡间距 = GAP，最外侧正好落在 PAD 上，与头部/主按钮/底栏同一条竖线。
+        holder.grid(row=3, column=0, columnspan=GRID_SUBCOLS, sticky="nsew",
+                    padx=PAD - GAP // 2, pady=(0, 0))
+        # 行权重要整体重置，不能只配当前 rows：窄→宽回落后（3 组从 2 行变回 1 行）
+        # 上一次留下的空壳行仍是 weight=1，会和唯一那行平分高度，卡片被夹扁、芯片整组消失。
+        for row_index in range(GRID_SUBCOLS):
+            live = row_index < rows
+            holder.grid_rowconfigure(row_index, weight=1 if live else 0,
+                                     uniform="grow" if live else "")
+        self._layout_group_cards()
+        log_row = 4
+        self._log_card.grid(row=log_row, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
+                            padx=PAD, pady=(GAP, 0))
+        self._foot.grid(row=log_row + 1, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
+                        padx=PAD, pady=(GAP, PAD))
+        # 剩余高度只给组卡那一行（第 3 行）；日志行与底栏都按内容高
+        for row_index in range(log_row + 2):
+            self.grid_rowconfigure(row_index, weight=1 if row_index == 3 else 0)
+
+    def _layout_group_cards(self) -> None:
+        """用设备像素矩形摆放三张组卡：三组卡宽严格相等，余数只落进卡间距。
+
+        cw = (W - (cols-1)*GAP) // cols，剩下的 0~cols-1 像素按列依次加进左侧间隙，
+        所以卡宽处处相同（同一列 chip 的 x0/x1 因此逐像素一致），右侧不留大缝。
+        卡高 = 行高，由容器高度均分 —— 与历史状态无关：先窄后宽回落到 960x700 与
+        全新启动同尺寸算出来的矩形完全相同。
+        """
+        holder = self._grid_holder
+        cards = self._groups
+        cols = self._columns or 1
+        try:
+            width, height = holder.winfo_width(), holder.winfo_height()
+        except Exception:      # noqa: BLE001 - 控件替身 / 窗口已销毁
+            return
+        if not cards or width <= 1 or height <= 1:
+            return
+        gap = self._px(GAP)
+        rows = max(1, (len(cards) + cols - 1) // cols)
+        card_w = max(1, (width - (cols - 1) * gap) // cols)
+        slack = max(0, width - (cols - 1) * gap - card_w * cols)   # 0 ~ cols-1
+        row_h = max(1, (height - (rows - 1) * gap) // rows)
+        for index, card in enumerate(cards):
+            row, column = divmod(index, cols)
+            in_row = min(cols, len(cards) - row * cols)
+            alone = column == 0 and in_row == 1
+            x = 0 if alone else column * (card_w + gap) + min(column, slack)
+            y = row * (row_h + gap)
+            card.place(x=x, y=y, width=width if alone else card_w, height=row_h)
+
+    def _schedule_glass(self) -> None:
+        """<Configure> 会被拖动窗口逐像素触发：防抖，停手 140ms 后再画一次。"""
+        job = getattr(self, "_glass_job", None)
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:      # noqa: BLE001
+                pass
+        try:
+            self._glass_job = self.after(140, self._paint_glass)
+        except Exception:      # noqa: BLE001 - 窗口已销毁
+            self._glass_job = None
+
+    def _paint_glass(self) -> None:
+        """按当前真实几何重画整窗底图，并把每块面板的采样色回填给控件。"""
+        self._glass_job = None
+        try:
+            width, height = self.winfo_width(), self.winfo_height()
+            if width < 120 or height < 120:
+                return
+            scale = self._get_window_scaling() or 1.0
+            origin_x, origin_y = self.winfo_rootx(), self.winfo_rooty()
+            panels = []
+            for key, panel in self._panels.items():
+                if not panel.winfo_ismapped() or panel.winfo_height() < 8:
+                    continue
+                panels.append((key, "panel",
+                               panel.winfo_rootx() - origin_x,
+                               panel.winfo_rooty() - origin_y,
+                               panel.winfo_width(), panel.winfo_height(), CARD_RADIUS))
+            button = self.btn_primary
+            panels.append(("primary", "glow",
+                           button.winfo_rootx() - origin_x,
+                           button.winfo_rooty() - origin_y,
+                           button.winfo_width(), button.winfo_height(), PRIMARY_RADIUS))
+            colors = self._backdrop.paint(width, height, scale, panels)
+            for key, color in colors.items():
+                panel = self._panels.get(key)
+                if panel is not None and color and panel.cget("fg_color") != color:
+                    panel.configure(fg_color=color)
+            self._sync_badge(colors.get("header") or CARD)
+            # 窗口高度变了 → 日志能占的像素也变了，重算一次行数（行数没变会早退）
+            self._sync_log_rows()
+        except Exception:      # noqa: BLE001 - 无显示环境 / 已销毁 / PhotoImage 失败
+            return
+
+    def _sync_badge(self, base: str) -> None:
+        """徽章底盘的底色跟着面板采样色走，否则圆图的四角会在面板上留一个方块。"""
+        size = self._px(BADGE_SIZE)
+        if base == self._badge_base and self._badge_photo is not None:
+            return
+        self._badge_base = base
+        picture = widgets.badge(size, base)
+        self._badge_photo = ctk.CTkImage(light_image=picture, dark_image=picture,
+                                         size=(size, size))
+        try:
+            self._badge_label.configure(image=self._badge_photo, fg_color=base,
+                                        width=size, height=size)
+        except Exception:      # noqa: BLE001
+            pass
+
+    def _log_room(self) -> float:
+        """日志正文最多能占多少逻辑像素。
+
+        绝不能按日志卡自己的位置/高度量：组卡那一行 weight=1 会吃掉剩余高度，日志卡就
+        坐在它下面，「按自己的位置算」量到的其实是自己当前的高度 —— 自己证明自己，
+        行数被自己锁死在 6 行。所以只按**固定栈**算：窗口高 - 头部 - 主按钮 - 条件槽 -
+        组卡的自然高度（组内 2 列 N 行时的高度）- 底栏，再减日志卡自己的抬头行与内边距。
+        """
+        try:
+            win_h = self.winfo_height()
+            scale = self._get_window_scaling() or 1.0
+        except Exception:      # noqa: BLE001 - 控件替身 / 还没布局
+            return 10 ** 6
+        if win_h <= 120:
+            return 10 ** 6
+        grid_rows = max(1, max((len(entries) + 1) // 2 for _title, entries in ACTION_GROUPS))
+        card_h = 30 + grid_rows * (GRID_BTN_H + GRID_PAD)      # 标题行 + N 行按钮
+        foot_h = 40
+        stack = (PAD + HEADER_H + GAP + ACTION_H + GAP + card_h + GAP + foot_h + PAD)
+        return win_h / scale - stack - 56                      # 56 = 抬头行 + 上下内边距
+
+    def _log_line_count(self) -> int | None:
+        """控件里真实的文本行数（Text 的 index("end-1c") 行号）；控件替身返回 None。"""
+        try:
+            return int(str(self.log.index("end-1c")).split(".")[0])
+        except Exception:      # noqa: BLE001 - 控件替身 / 已销毁
+            return None
+
+    def _sync_log_rows(self) -> None:
+        """日志区高度 = clamp(控件实际行数, LOG_ROWS_MIN, LOG_ROWS_MAX) 行。
+
+        行数只认 Text 自己数的（index("end-1c")），所以 marker 里的 rows 与截图里的行数
+        说的是同一件事。空态另有一条下限（LOG_ROWS_EMPTY）：不然 140px 的圆形头像会被
+        6 行 = 96px 的格子裁掉。
+        """
+        total = self._log_line_count()
+        if total is None:
+            return
+        # 空 Text 的 index("end-1c") 是 "1.0"（连空行都算 1 行），所以"空"不能只看行号：
+        # 没有字就按 0 行走空态下限，否则 140px 的头像会被 6 行挤掉。
+        empty = total <= 1 and not str(self.log.get("1.0", "end-1c")).strip()
+        rows = log_rows_with_empty(0 if empty else total,
+                                   self._log_room())      # 两边都是逻辑像素
+        # 说明行每次都要刷新：首次布局时行数没变，若跟着早退回退就永远没文案。
+        hint = getattr(self, "lbl_log_hint", None)
+        if hint is not None:
+            try:
+                hint.configure(text="区域 %d 行 · 上限 %d 行" % (rows, MAX_LOG_LINES))
+            except Exception:      # noqa: BLE001 - 控件替身
+                pass
+        if rows == self._log_rows:
+            return
+        self._log_rows = rows
+        try:
+            self.log.configure(height=rows * LOG_LINE_PX)
+        except Exception:      # noqa: BLE001
+            pass
+
+    def _sync_log_empty(self, empty: bool | None = None) -> None:
+        """空态：日志没字时把插画摆出来，有字就收起（同一格，永远只有一块可见）。"""
+        if empty is None:
+            try:
+                empty = not self.log.get("1.0", "end-1c").strip()
+            except Exception:      # noqa: BLE001 - 控件替身
+                return
+        if bool(empty) is bool(self._log_empty):
+            return
+        self._log_empty = bool(empty)
+        try:
+            if self._log_empty:
+                self._empty.grid()
+                self._empty.tkraise()
+            else:
+                self._empty.grid_remove()
+        except Exception:      # noqa: BLE001
+            pass
     # ---------------- helpers ----------------
     def logline(self, msg: str) -> None:
         self.log.configure(state="normal")
         self.log.insert("end", time.strftime("[%H:%M:%S] ") + msg + "\n")
+        self._clear_log_selection()
+        self._sync_log_empty(False)
+        self._sync_log_rows()
         self._scroll_log_to_end()
         self._mirror_log()
         self.log.configure(state="disabled")
@@ -537,6 +992,9 @@ class ConsoleApp(ctk.CTk):
             for line in lines:
                 self.log.insert("end", prefix + line + "\n")
             self._trim_log(limit)
+            self._clear_log_selection()
+            self._sync_log_empty(False)
+            self._sync_log_rows()
             self._scroll_log_to_end()
             self._mirror_log()
             self.log.configure(state="disabled")
@@ -663,75 +1121,108 @@ class ConsoleApp(ctk.CTk):
         threading.Thread(target=work, daemon=True, name="dsh-refresh").start()
 
     def _show_refreshing(self) -> None:
+        """刷新中：状态词保留，后面挂一句安静的「刷新中」，颜色不跳（避免闪）。"""
         try:
             if self._last_status is None:
-                self.lbl_service.configure(text="⟳  刷新中…", text_color=CYAN)
+                self.lbl_service.configure(text="检测中…", text_color=CYAN)
                 return
             style = PHASE_STYLE[self._last_status.phase]
-            self.lbl_service.configure(
-                text=f"{style.dot}  服务状态：{self._last_status.phase.label}　⟳ 刷新中…",
-                text_color=style.color)
+            self.lbl_service.configure(text=f"{self._last_status.phase.label} · 刷新中…",
+                                       text_color=style.color)
         except Exception:  # noqa: BLE001 - 窗口已销毁
             pass
 
     def _show_refresh_failed(self, why: str) -> None:
         try:
-            self.lbl_service.configure(text=f"？  状态未知：刷新失败（{why[:60]}）",
+            self.lbl_service.configure(text=f"状态未知（刷新失败：{why[:40]}）",
                                        text_color=FAINT)
         except Exception:  # noqa: BLE001
             pass
 
     def _apply_status(self, state: "status.Status", token: "str | None" = None) -> None:
-        """回填一次状态：所有控件改动都压在一次回调里，且每个控件只 configure 一次。
+        """回填一次状态：所有控件改动压在一次回调里，且每个控件只 configure 一次。
 
         这个函数跑在 Tk 主线程上，探测线程还在收尾时会跟它抢 GIL —— 实测空闲时
         一次 ~15 ms，抢 GIL 时一次 Tk 调用就要 20 ms 上下。所以这里的原则是
-        「少调用」：说明文字合成一次 insert，能后台算的（token）都在后台算。
+        「少调用」：能后台算的（token）都在后台算，网络细节只在变化时进日志。
         """
         self._last_status = state
         style = PHASE_STYLE[state.phase]
-        self.lbl_service.configure(
-            text=f"{style.dot}  服务状态：{state.phase.label}", text_color=style.color)
+        self.lbl_service.configure(text=state.phase.label, text_color=style.color)
         self._sync_primary(state.phase)          # 主按钮的文案与颜色跟着状态走
-        ring = getattr(self, "ring", None)
-        if ring is not None:
-            ring.set_status(state.phase, state.pids)   # 环：颜色 + 状态词 + PID
+        lamp = getattr(self, "lamp", None)
+        if lamp is not None:
+            lamp.set_status(state.phase)         # 灯：颜色 + 弧长 + 状态词
+        self._sync_detail(state)
         if state.phone_open is None:
-            phone_text, phone_dot, phone_color = "未知（原因见日志）", "？", FAINT
+            phone_text, phone_color = "手机访问：未知", FAINT
         elif state.phone_open:
-            phone_text, phone_dot, phone_color = "已开启（Tailscale / 局域网可访问）", "●", GREEN
+            phone_text, phone_color = "手机访问：已开启", GREEN
         else:
-            phone_text, phone_dot, phone_color = "本机模式", "○", DIM
-        self.lbl_phone.configure(text=f"{phone_dot}  手机访问：{phone_text}", text_color=phone_color)
-        ts = state.ts_ip or "未知"
-        lans = "、".join(state.lan_ips) if state.lan_ips else "未知"
+            phone_text, phone_color = "手机访问：本机模式", DIM
+        self.lbl_phone.configure(text=phone_text, text_color=phone_color)
         self._token = token if token is not None else token_url()
-        self.lbl_net.configure(
-            text=f"Tailscale：{ts}\n局域网：{lans}\n"
-                 f"Token：{'已获取（点「复制手机地址」发送）' if self._token else '未获取（启动后生成）'}")
         if state.notes:
             stamp = time.strftime("[%H:%M:%S] ")
             self._append_log([stamp + note for note in state.notes])
+        self._log_net_once(state)
         self._candidates = (adopt.from_processes(state.others)
                             if state.phase is status.Phase.DEGRADED else [])
         self._sync_adopt_button()
 
-    def _sync_adopt_button(self) -> None:
-        """异常（端口被占用）且查到占用者时才摆出采纳按钮；状态一正常就收起。"""
-        if not self._candidates:
-            if self._adopt_shown:
-                self.btn_adopt.pack_forget()
-                self._adopt_shown = False
+    def _sync_detail(self, state: "status.Status") -> None:
+        """状态条中段：PID 与端口。数字走等宽字体，刷新时宽度不抖。"""
+        label = getattr(self, "lbl_detail", None)
+        if label is None:            # 控件替身 / 还没建好
             return
-        count = len(self._candidates)
-        text = (f"🔧  改为控制运行中的实例（PID {self._candidates[0].pid}）" if count == 1
-                else f"🔧  改为控制运行中的实例（{count} 个候选，点击后选择）")
-        self.btn_adopt.configure(text=text)
-        if not self._adopt_shown:
-            self.btn_adopt.pack(fill="x", padx=14, pady=(0, 12))
-            self._adopt_shown = True
+        pids = "、".join(str(pid) for pid in (state.pids or [])) or "—"
+        port = f"{PORT}（在线）" if state.port_open else f"{PORT}（离线）"
+        try:
+            label.configure(text=f"PID {pids} · 端口 {port}")
+        except Exception:      # noqa: BLE001
+            pass
 
-    # ---------------- 大环 / 抽屉 / 浮层 ----------------
+    def _log_net_once(self, state: "status.Status") -> None:
+        """网络细节（Tailscale / 局域网 / Token）只在变化时写日志。
+
+        它们原来占状态卡三行，现在状态条只留一眼看得到的三个字段；细节不值得
+        常驻占高度，但也不能凭空消失，所以变化时落到日志里。
+        """
+        ts = state.ts_ip or "未知"
+        lans = "、".join(state.lan_ips) if state.lan_ips else "未知"
+        line = (f"网络：Tailscale {ts} · 局域网 {lans} · "
+                f"Token {'已获取' if self._token else '未获取'}")
+        if line == getattr(self, "_last_net", ""):
+            return
+        self._last_net = line
+        self.logline(line)
+
+    def _sync_adopt_button(self) -> None:
+        """异常（端口被占用）且查到占用者时才摆出采纳按钮；状态一正常就收起。
+
+        按钮所在那一行（self._slot）跟着长高 / 收成 0：没有候选时不留空格子。
+        控件替身（tests/test_gui_hooks.py 的 FakeApp）没有 _slot，getattr 直接跳过。
+        """
+        shown = bool(self._candidates)
+        if shown:
+            count = len(self._candidates)
+            text = (f"改为控制运行中的实例（PID {self._candidates[0].pid}）" if count == 1
+                    else f"改为控制运行中的实例（{count} 个候选，点击后选择）")
+            self.btn_adopt.configure(text=text)
+            if not self._adopt_shown:
+                self.btn_adopt.pack(fill="both", expand=True)
+                self._adopt_shown = True
+        elif self._adopt_shown:
+            self.btn_adopt.pack_forget()
+            self._adopt_shown = False
+        slot = getattr(self, "_slot", None)
+        if slot is not None:
+            try:
+                slot.configure(height=GRID_BTN_H - 2 if shown else 0)
+            except Exception:      # noqa: BLE001 - 控件替身
+                pass
+
+    # ---------------- 主操作 / 日志 / 浮层 ----------------
     def _run_primary(self) -> None:
         """主按钮：永远调当前状态对应的那颗老回调（不新写业务）。"""
         handler = getattr(self, "on_" + self._primary_name, None)
@@ -746,78 +1237,25 @@ class ConsoleApp(ctk.CTk):
         if button is None:          # 控件替身 / 还没建好
             return
         try:
-            button.configure(text=label, fg_color=color, hover_color=hover)
+            # 描边与底色同色：静息时看不见，悬停时由 _glow_hover 提亮成泛光。
+            button.configure(text=label, fg_color=color, hover_color=hover,
+                             border_color=color)
         except Exception:      # noqa: BLE001
             pass
-
-    def _drawer_items(self) -> list:
-        """抽屉条目：其余操作都收在这里。托盘右键菜单是 Host 语义，两者不复用。"""
-        follow = "暂停日志跟随" if self._log_follow else "继续日志跟随"
-        mode = "关闭窗口时：退出程序" if self._close_to_tray else "关闭窗口时：收进托盘"
-        try:
-            pending = len(self._queue.pending())
-        except Exception:      # noqa: BLE001
-            pending = 0
-        items = [
-            ("🔄  刷新状态", self.on_refresh),
-            ("♻  重启 DSH", self.on_restart),
-            ("🔢  切换 Web 端口…", self.on_change_port),
-            ("📱  手机访问（二维码）", self.on_phone_access),
-            ("📋  复制手机访问地址", self.on_copy),
-            ("🖥  复制本机地址", self.on_copy_local),
-            ("📶  开启手机访问（需 UAC）", self.on_phone_on),
-            ("🏠  恢复本机模式（需 UAC）", self.on_phone_off),
-            ("🩺  导出诊断包", self.on_export_diag),
-            (f"📜  {follow}", self.on_toggle_log_follow),
-            (f"📌  {mode}", self.on_toggle_close_mode),
-        ]
-        if pending:
-            items.append((f"✖  取消排队（{pending} 个）", self.on_cancel_queue))
-        items.append(("🚪  退出", self._quit))
-        return items
-
-    def _open_drawer(self) -> None:
-        """「⋯」抽屉：每次打开都重建，动态文案（跟随 / 关闭行为 / 队列）才是当下的。"""
-        if self._drawer is not None:
-            self._drawer.close()
-            self._drawer = None
-        try:
-            x = self.btn_menu.winfo_rootx() + self.btn_menu.winfo_width() - DRAWER_WIDTH
-            y = self.btn_menu.winfo_rooty() + self.btn_menu.winfo_height() + 6
-        except Exception:      # noqa: BLE001 - 控件已销毁
-            x = y = 120
-        self._drawer = widgets.DrawerMenu(self, self._drawer_items(), x=x, y=y,
-                                          on_close=self._on_drawer_closed)
-        self._drawer.show()
-        self._place_drawer()
-
-    def _place_drawer(self) -> None:
-        """把抽屉钉在「⋯」右下角：宽度要等窗口画出来才知道（高 DPI 下不等于设计值）。"""
-        menu = self._drawer
-        if menu is None:
-            return
-        try:
-            self.update_idletasks()
-            right = self.btn_menu.winfo_rootx() + self.btn_menu.winfo_width()
-            x = max(self.winfo_rootx() + 6, right - menu.winfo_width())
-            y = self.btn_menu.winfo_rooty() + self.btn_menu.winfo_height() + 6
-            menu.geometry("+%d+%d" % (int(x), int(y)))
-        except Exception:      # noqa: BLE001 - 控件已销毁
-            pass
-
-    def _on_drawer_closed(self) -> None:
-        self._drawer = None
 
     def on_toggle_log_follow(self) -> None:
         """日志跟随开关：关掉只是不再读新行，框里已有的内容照旧留着。"""
         if not self._log_follow:
+            self._log_follow = True
             self._start_log_tail()
-            return
-        tail, self._tail = self._tail, None
-        self._log_follow = False
-        if tail is not None:
-            tail.stop()
-        self.logline("已暂停日志跟随（「⋯」里可以再打开）。")
+            self.logline("已恢复日志跟随。")
+        else:
+            tail, self._tail = self._tail, None
+            self._log_follow = False
+            if tail is not None:
+                tail.stop()
+            self.logline("已暂停日志跟随（再点一次同一颗按钮恢复）。")
+        self._sync_group_labels()
 
     def on_expand_log(self) -> None:
         """全屏看日志：与主框同一份内容，关掉就回到末尾 15 行。"""
@@ -979,6 +1417,11 @@ class ConsoleApp(ctk.CTk):
         self._submit("启动 DeepSeek Harness", self._start)
 
     def _start(self) -> None:
+        # 「启动 DSH」现在是常驻可点的一颗按钮（不再只能从主按钮进去），
+        # 所以这里加一道守卫：端口已经在线就不再加拉一份 DSH。
+        if self._port_open():
+            self.log_async("已经在运行（端口在线），跳过启动，避免起来第二份 DSH。")
+            return
         self.log_async("正在启动 DeepSeek Harness…")
         r = run_ps(LAUNCH_PS1, *_ps_args(include_chrome=True), timeout=90)
         out = (r.stdout or "").strip()
@@ -1276,18 +1719,27 @@ def _running_status(pid: int = 4321) -> "status.Status":
 
 
 def selftest() -> int:
+    """无窗口交互的自检：状态灯 / 主操作 / 功能网格 / 日志 / 浮层 / 布局。
+
+    marker 字段名沿用批次 D 的格式（ring= 现在报的是状态灯的状态词，
+    menu_items= 报的是功能网格里的按钮数），只在其后追加新字段。
+    """
     app = ConsoleApp()
     app._status_provider = _quiet_status      # 自检不依赖本机真实端口与进程
     app._snapshot.invalidate()
     # 先让启动时的自动刷新（150ms 后）跑完，再逐块验证
     time.sleep(0.6)
     app.update()
+    try:
+        alpha_now = app.attributes("-alpha")      # 必须在 mainloop 之前取：窗口销毁后拿不到
+    except Exception:      # noqa: BLE001 - 无合成器
+        alpha_now = "-"
 
-    # 状态环 + 单主按钮：环里必须写着状态词（不能只靠颜色区分），按钮文案跟着变
+    # 状态灯 + 单主按钮：灯旁必须写着状态词（不能只靠颜色区分），按钮文案跟着变
     app._apply_status(_running_status())
     app.update()
     try:
-        ring_text = app.ring.phase_text
+        ring_text = app.lamp.phase_text
     except Exception:      # noqa: BLE001 - 拿不到就直接判失败
         ring_text = ""
     ok_ring = ring_text == PHASE_WORD[status.Phase.RUNNING]
@@ -1308,7 +1760,7 @@ def selftest() -> int:
     app.update()
     ok_adopt_hidden = not app._candidates and not app._adopt_shown
 
-    # 二维码改住浮层：主界面不常驻，弹层关掉就清干净
+    # 二维码住浮层：主界面不常驻，弹层关掉就清干净
     app._token = "selftest-token"    # 必须在最后一次 _apply_status 之后（否则被真 token 覆盖）
     app.on_phone_access()
     app.update()
@@ -1319,16 +1771,59 @@ def selftest() -> int:
     ok_overlay_closed = app._qr_overlay is None and app._log_overlay is None
     ok_clear = app._qr_photo is None
 
-    # 「⋯」抽屉：其余操作都在里面
-    app._open_drawer()
-    app.update()
+    # 功能网格：全部操作平铺可见（没有「⋯」抽屉），每颗按钮都真的接上了回调
     try:
-        menu_items = len(app._drawer.labels())
+        buttons = dict(app._group_buttons)
+        menu_items = len(buttons)
+        texts = [button.cget("text") for button in buttons.values()]
+        ok_menu = (menu_items == sum(len(entries) for _t, entries in ACTION_GROUPS)
+                   and all(texts) and all(button.cget("command")
+                                          for button in buttons.values()))
+        # 文案前面带图标（例如「⇄  开启手机访问（UAC）」），断言按子串走。
+        ok_phone_on = any("开启手机访问（UAC）" in (text or "") for text in texts)
+        ok_toggle_label = "关闭窗口时：" in (buttons["on_toggle_close_mode"].cget("text") or "")
     except Exception:      # noqa: BLE001
-        menu_items = -1
-    app._close_overlays()
-    app.update()
-    ok_menu = menu_items >= 11
+        menu_items, ok_menu, ok_phone_on, ok_toggle_label = -1, False, False, False
+    groups = len(getattr(app, "_groups", []))
+
+    # 布局：三组卡片整块落在日志上方，日志不能被挤没，底栏不能掉出窗口
+    app.update_idletasks()
+    try:
+        columns = app._columns
+        root_y, win_h = app.winfo_rooty(), app.winfo_height()
+        cards = [card for card in app._groups if card.winfo_ismapped()]
+        grid_bottom = max(card.winfo_rooty() + card.winfo_height() - root_y
+                          for card in cards)
+        log_top = app.log.winfo_rooty() - root_y
+        foot_bottom = (app.lbl_close_hint.winfo_rooty()
+                       + app.lbl_close_hint.winfo_height() - root_y)
+        # 卡片整块在日志上方、卡片与底栏都在窗口内、日志没被挤成一条缝
+        ok_fit = (bool(cards) and grid_bottom <= log_top and foot_bottom <= win_h
+                  and app.log.winfo_height() >= LOG_ROWS_MIN * LOG_LINE_PX * 0.8)
+        # 主按钮通栏：右边缘要顶到窗口内边距，右侧不留死空间
+        primary_right = app.btn_primary.winfo_x() + app.btn_primary.winfo_width()
+        ok_primary_full = primary_right >= app.winfo_width() - 2 * PAD - 2
+        # 日志高度按内容自适应，且永远落在上下限之内
+        ok_rows = LOG_ROWS_MIN <= app._log_rows <= LOG_ROWS_MAX
+        # 空态插画块与「日志是否为空」的实际值一致（该露就露，该收就收）
+        ok_empty = app._log_empty == (not app.log.get("1.0", "end-1c").strip())
+        # 玻璃背景板真的画出来了（不是空画布）
+        ok_glass = getattr(app._backdrop, "_photo", None) is not None
+        # marker 里的 rows 必须与视觉一致：行数由控件自己数（Text 的 index("end-1c")），
+        # 高度由同一份行数算出。下面这一量发生在灌 2100 行之前 —— 那才是截图看到的一屏。
+        rows_lines = app._log_line_count() or 0
+        rows_shown = app._log_rows
+        ok_rows = ok_rows and rows_shown == log_rows_with_empty(rows_lines, app._log_room())
+        # ico 证据：文件路径 + 圆遮罩参数 + 徽章的实际设备像素
+        icon_path = resources.icon_path()
+        ico_field = ("%s|cut=cx%d,cy%d,r%d|dev=%dpx" % (
+            icon_path.name if icon_path is not None else "none",
+            widgets.AVATAR_CENTER[0], widgets.AVATAR_CENTER[1], widgets.AVATAR_RADIUS,
+            app._px(BADGE_SIZE)))
+    except Exception:      # noqa: BLE001
+        columns, ok_fit, ok_primary_full, ok_rows, ok_empty, ok_glass = (
+            -1, False, False, False, False, False)
+        rows_lines, rows_shown, ico_field = -1, -1, "none"
 
     # 日志滚动上限：塞 2100 行后行数必须回到上限以内（C2）
     app._append_log([f"自检第 {i} 行" for i in range(MAX_LOG_LINES + 100)])
@@ -1338,9 +1833,22 @@ def selftest() -> int:
     except Exception:      # noqa: BLE001 - 取不到就直接判失败
         log_lines = -1
     ok_trim = 0 < log_lines <= MAX_LOG_LINES
+    # 灌满 2000 行之后再量一次：日志长到上限也不许把页脚挤出窗口
+    app.update_idletasks()
+    try:
+        root_y, win_h = app.winfo_rooty(), app.winfo_height()
+        foot_bottom = (app.lbl_close_hint.winfo_rooty()
+                       + app.lbl_close_hint.winfo_height() - root_y)
+        scale = app._get_window_scaling() or 1.0
+        shown = app.log.winfo_height() / scale
+        ok_fit_full = (foot_bottom <= win_h
+                       and app._log_rows * LOG_LINE_PX <= app._log_room() + 1
+                       # 真被裁掉半行时：实际可用高度会小于声称的行数所需
+                       and shown + 1 >= app._log_rows * LOG_LINE_PX)
+    except Exception:      # noqa: BLE001
+        ok_fit_full = False
 
-    # 日志默认只显示末尾 N 行，展开全屏就是同一份内容
-    ok_collapsed = app._log_rows == LOG_ROWS_COLLAPSED
+    # 日志区高度由内容决定（不再是固定 15 行），展开全屏就是同一份内容
     app.on_expand_log()
     app.update()
     try:
@@ -1361,7 +1869,9 @@ def selftest() -> int:
     app.mainloop()
     ok = all([ok_qr, ok_clear, ok_adopt_shown, ok_adopt_hidden, ok_trim, ok_addr,
               ok_ring, ok_primary, ok_primary_deg, ok_menu, ok_overlay_open,
-              ok_overlay_closed, ok_collapsed, log_expanded])
+              ok_overlay_closed, ok_rows, log_expanded, ok_phone_on,
+              ok_toggle_label, ok_fit, ok_primary_full, ok_empty, ok_glass,
+              ok_fit_full])
     marker = Path(os.environ.get("TEMP", ".")) / "dsh-gui-selftest.txt"
     marker.write_text(
         f"OK {time.strftime('%Y-%m-%d %H:%M:%S')} qr={ok_qr} clear={ok_clear} "
@@ -1369,7 +1879,16 @@ def selftest() -> int:
         f"log_lines={log_lines} trim={ok_trim} addresses={ok_addr} "
         f"ring={ring_text or '无'} menu_items={menu_items} "
         f"overlay_open={ok_overlay_open} overlay_closed={ok_overlay_closed} "
-        f"log_collapsed={log_collapsed} log_expanded={log_expanded}\n", encoding="utf-8")
+        f"log_collapsed={log_collapsed} log_expanded={log_expanded} "
+        f"groups={groups} columns={columns} fit={ok_fit} "
+        f"phone_on={ok_phone_on} toggle_label={ok_toggle_label} "
+        # 以下是批次 F 追加的字段（旧字段名与顺序不动）
+        f"primary_full={ok_primary_full} rows={rows_shown} rows_lines={rows_lines} "
+        f"rows_ok={ok_rows} empty_state={ok_empty} glass={ok_glass} fit_full={ok_fit_full} "
+        f"hero_art={widgets.art_image('hero') is not None} "
+        f"ico={ico_field} "
+        f"alpha={alpha_now} "
+        "\n", encoding="utf-8")
     if sys.stdout:
         print(f"SELFTEST {'OK' if ok else 'FAILED'}")
     return 0 if ok else 1
@@ -1517,10 +2036,10 @@ def main() -> int:
         woken = single.signal_activate()
         if woken or single.focus_window(APP_TITLE):
             # 已经把它拉到眼前了，再弹一个「你在重复打开」的对话框只是多要一次点击。
-            print("已经有一个 DSH 控制台在运行，已把它的窗口显示出来；这个窗口不再打开。")
+            print("已经有一个 小肥鱼控制台 在运行，已把它的窗口显示出来；这个窗口不再打开。")
         else:
             _info_blocking(APP_TITLE,
-                           "已经有一个 DSH 控制台在运行（没能把它切到前台，请从任务栏打开）。"
+                           "已经有一个 小肥鱼控制台 在运行（没能把它切到前台，请从任务栏打开）。"
                            "\n这个窗口不再打开。")
         return 0
     if want_harness is not None or want_port is not None:
