@@ -1,5 +1,8 @@
 # 小肥鱼控制台 · DSH Console
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![check](https://github.com/berserkross/dsh-littleFatFishConsole/actions/workflows/check.yml/badge.svg)](https://github.com/berserkross/dsh-littleFatFishConsole/actions/workflows/check.yml)
+
 DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双击 exe 或运行脚本即可打开窗口，
 用来在本机启动 / 停止 DSH Web 服务、把服务临时开给手机访问、以及随时看状态。
 
@@ -50,6 +53,10 @@ DeepSeekChan [256x256].ico       窗口与 exe 图标
 reference/launch-dsh.ps1         本程序调用的 harness 启动器（对照用）
 reference/switch-dsh-web.ps1     本程序调用的手机访问切换器（对照用）
 docs/build-and-signing.md        构建、加版本信息、签名交接单
+.github/workflows/check.yml      CI：依赖安装 + 语法检查
+LICENSE                          MIT 许可证
+SECURITY.md                      漏洞上报方式与预期行为
+CHANGELOG.md                     版本变更记录
 ```
 
 ## v1 已知问题（进 v2 要解决）
@@ -67,3 +74,12 @@ docs/build-and-signing.md        构建、加版本信息、签名交接单
 ## 商标
 
 图标与配色取自 DeepSeek 品牌视觉，仅作本机自用；对外分发请自行替换并遵守相应商标政策。
+
+## 安全
+
+本程序会改 portproxy 规则、启停 DSH 进程、并从日志里读带 token 的访问地址（只在内存里用，不落盘）。
+发现异常行为请按 [SECURITY.md](SECURITY.md) 私密上报，不要开公开 issue。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 YANG TIANRUI (berserkross)
