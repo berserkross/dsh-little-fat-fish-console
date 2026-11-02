@@ -1,0 +1,28 @@
+name: 功能建议
+description: 想让它多做点什么
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你现在缺什么
+      description: 先说麻烦，再说方案
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你希望的方案
+    validations:
+      required: false
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 属于哪块
+      options:
+        - label: 启停 DSH
+        - label: 手机访问 / Tailscale
+        - label: 状态与日志
+        - label: 打包与发布
+        - label: 其他

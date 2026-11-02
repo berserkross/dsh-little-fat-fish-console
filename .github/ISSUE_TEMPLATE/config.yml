@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（私密上报）
+    url: https://github.com/berserkross/dsh-littleFatFishConsole/security/advisories/new
+    about: 请不要开公开 issue，走 Security 里的私密上报
