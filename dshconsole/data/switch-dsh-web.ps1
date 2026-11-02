@@ -9,13 +9,18 @@
     [string]$BinJs    = '',    # bin.js 全路径；空则由 $Harness 推导
     [string]$DshHome  = '',    # DSH_HOME；空则由 $Harness 推导
     [int]$Port        = 3080,  # 网页端口（端口转发与信任来源都用它）
-    [string]$RuleName = ''     # 防火墙规则名；空则按端口生成
+    [string]$RuleName = '',    # 防火墙规则名；空则按端口生成
+    [string]$ServeHost = ''    # tailscale serve 的 MagicDNS 域名，形如 host:80；非空则一并加入 trusted-host
 )
 
 # ============================================================
 #  DSH 手机访问切换器
-#  - 默认模式：把 DSH 网页（127.0.0.1:<Port>）经端口转发开放给
-#              Tailscale IP（及局域网 IP），并加 trusted-host 放行 /api
+#  - 首选路径：tailscale serve —— 由 tailscaled 自己监听 80/443 并代理到
+#              127.0.0.1:<Port>，不需要管理员权限、不需要端口转发、不需要动防火墙。
+#              这条路在 Python 侧（dshconsole/tailscale.py、phone.py）编排，
+#              本脚本只需用 -ServeHost 把 MagicDNS 域名加进 trusted-host。
+#  - 默认模式：回退路径 —— 把 DSH 网页（127.0.0.1:<Port>）经 netsh 端口转发
+#              开放给 Tailscale IP（及局域网 IP），并加 trusted-host 放行 /api
 #  - -Restore ：拆除开放，恢复仅本机可访问
 #  说明：当前版本 dsh 禁止监听 0.0.0.0，所以用 netsh 端口转发 + token 地址。
 # ============================================================
@@ -88,9 +93,15 @@ function Remove-Proxy([string]$ListenIp) {
 }
 
 function Ensure-Firewall {
+    # 实测：WLAN 与以太网都被 Windows 判为「公用」，而老规则只写了 Private,Domain ——
+    # 规则存在、Enabled=True，局域网路径却整条静默失效。所以两件事都要做：
+    #   1) 新建规则就用 Any；2) 已存在的规则要 Set-NetFirewallRule 补 Profile
+    #      （只判断「规则在不在」会漏掉这个坑）。
     if (-not (Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue)) {
         New-NetFirewallRule -DisplayName $RuleName -Direction Inbound -Action Allow -Protocol TCP `
-            -LocalPort $Port -Profile Private,Domain -Program $NodeExe -ErrorAction SilentlyContinue | Out-Null
+            -LocalPort $Port -Profile Any -Program $NodeExe -ErrorAction SilentlyContinue | Out-Null
+    } else {
+        Set-NetFirewallRule -DisplayName $RuleName -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
     }
 }
 
@@ -126,7 +137,8 @@ if (-not $DryRun -and -not (Test-Admin)) {
         @('-BinJs',    $BinJs),
         @('-DshHome',  $DshHome),
         @('-Port',     "$Port"),
-        @('-RuleName', $RuleName))) {
+        @('-RuleName', $RuleName),
+        @('-ServeHost', $ServeHost))) {
         if ($pair[1]) {
             $argList += $pair[0]
             $argList += ('"{0}"' -f $pair[1])
@@ -158,7 +170,7 @@ if ($Mode -eq 'expose') {
     if ($DryRun) {
         Write-Info '[DryRun] 将执行：'
         foreach ($ip in $allIps) { Write-Info "  netsh portproxy v4tov4 listenaddress=$ip listenport=$Port -> 127.0.0.1:$Port" }
-        Write-Info "  防火墙规则：node.exe TCP $Port 入站允许（Private/Domain）"
+        Write-Info "  防火墙规则：node.exe TCP $Port 入站允许（Any：Private/Domain/Public）"
         Write-Info "  启动 DSH 网页进程（端口 $Port，trusted-host 含各网卡地址）"
         Pause-End
         exit
@@ -189,6 +201,8 @@ if ($Mode -eq 'expose') {
     foreach ($ip in $allIps) { Add-Proxy $ip }
     $trusted = @('--trusted-host', "127.0.0.1:$Port", '--trusted-host', "localhost:$Port")
     foreach ($ip in $allIps) { $trusted += @('--trusted-host', "$ip`:$Port") }
+    # serve 路径的 Host 头是 MagicDNS 域名（端口 80/443），不在网卡 IP 列表里，单独补。
+    if ($ServeHost) { $trusted += @('--trusted-host', $ServeHost) }
     Write-Info '启动 DSH 网页服务（手机可访问）...'
     Start-Dsh $trusted
 } else {

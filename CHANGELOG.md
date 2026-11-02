@@ -2,6 +2,30 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- `dshconsole/addresses.py`：手机可达候选 `mobile_candidates()` / `primary_mobile()`，按
+  serve 域名 > Tailscale 100.x > 局域网私有网段 > 回环 排序，回环地址默认整条剔除；
+  `Candidate.phone_reachable` / `display()` 给界面直接用，`url_for()` / `host_port()` 统一拼地址
+  （默认端口省略、IPv6 加方括号）。
+- `dshconsole/tailscale.py`：Tailscale 事实层。`detect()` 读 `status --json` 与 `serve status --json`，
+  `serve_argv()` / `enable_serve()` / `reset_serve()` 管 serve 生命周期，`https_reason()` / `http_reason()`
+  给结构化失败原因（cli_missing / daemon_down / not_logged_in / no_magicdns / https_disabled / serve_failed）。
+  import 时不执行命令，解析函数只吃字符串，IO 全部可注入。
+- `dshconsole/phone.py`：策略层 `plan()` / `detect_plan()` 返回 `PhonePlan`（候选列表 + 生效方式 +
+  失败原因 + 用户下一步 + trusted-host 列表），serve 不可用时自动回退端口转发；`phone_checklist()`
+  给「手机要满足什么」的判定清单。
+
+### 变更
+
+- `dshconsole/data/switch-dsh-web.ps1`：新增 `-ServeHost`（把 MagicDNS 域名加入 `--trusted-host`）；
+  防火墙规则改为 `-Profile Any`，且对已存在的规则补 `Set-NetFirewallRule -Profile Any`
+  （实测 WLAN/以太网被判为「公用」时，只放行 Private,Domain 的规则会让局域网路径整条静默失效）。
+- 测试 208 → 269 例（新增 `tests/test_tailscale.py`、`tests/test_phone.py`，`tests/test_addresses.py`
+  补回环排除/排序/候选测试）。
+
 ## [2.1.0] - 2026-11-03
 
 v2 批次 D：视觉重排（方案 1「大环 + 抽屉」）—— 界面从「八颗按钮 + 常驻二维码」改成「一颗环、一颗主按钮、一个抽屉」。

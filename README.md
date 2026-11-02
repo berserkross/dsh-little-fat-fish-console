@@ -49,6 +49,45 @@ Tailscale / 局域网地址。
 
 配色与尺寸常量在 `dshconsole/ui_theme.py`，状态环、抽屉、两个浮层在 `dshconsole/widgets.py`。
 
+## 手机访问（serve 优先，端到端重做中）
+
+二维码只允许编码**手机真的打得开**的地址。回环地址（`127.0.0.1` / `localhost` / `::1`）永远不进二维码 ——
+那是手机自己的回环，扫出来必然打不开，这正是旧版本二维码扫不开的根因。
+
+候选地址按这个顺序给出（`dshconsole/addresses.py` 的 `mobile_candidates()`）：
+
+| 顺位 | 层级 | 形态 | 说明 |
+|---|---|---|---|
+| 1 | `serve` | `http(s)://<machine>.<tailnet>.ts.net/` | `tailscale serve` 代理到 `127.0.0.1:<port>`；不需要管理员权限、不需要端口转发、不需要动防火墙 |
+| 2 | `tailscale` | `http://100.x.y.z:<port>/?token=…` | 回退路径：netsh 端口转发 + 本机 DSH 监听回环 |
+| 3 | `lan` | `http://10.x / 192.168.x:<port>/?token=…` | 同一 Wi-Fi 下的局域网地址；校园网常开设备隔离，未必通 |
+| 4 | `loopback` | `http://127.0.0.1:<port>/` | **只在界面下拉里出现，不进二维码** |
+
+策略层在 `dshconsole/phone.py`（`plan()` / `detect_plan()`）：先试 serve，认证状态、MagicDNS 关闭或
+`tailscale serve` 装不上都会带着结构化原因自动回退到端口转发，并把「用户该做的下一步」写进结果。
+事实层在 `dshconsole/tailscale.py`：只解析 `tailscale status --json` / `tailscale serve status --json`，
+import 时**不执行任何命令**，所有 IO 都能注入假的 spawn 单测。
+
+### 手机要满足什么才能打开
+
+1. 手机装了 Tailscale，并登录**同一个 tailnet**（serve 出来的地址只在 tailnet 内可见，不是公网）。
+2. 手机能解析 `<machine>.<tailnet>.ts.net`（MagicDNS 打开时自动生效）。
+3. serve 路径：`tailscale serve status` 能看到指向 `127.0.0.1:<port>` 的代理。
+4. 回退路径：Windows 防火墙放行 node.exe 的 TCP 端口，且 `netsh interface portproxy` 里有对应网卡。
+   **注意**：Win10/11 会把校园网 Wi-Fi 判成「公用」，老版本只放行 Private,Domain 的规则因此整条静默失效；
+   现在切换器新建规则用 `-Profile Any`，已存在的规则也会 `Set-NetFirewallRule -Profile Any` 补上。
+5. 二维码里的 `token` 首次打开就会被写进 Cookie，之后刷新不再需要。
+
+serve 是常驻配置，拆除用：
+
+```powershell
+tailscale serve reset
+```
+
+> 目前 MagicDNS 域名的 HTTPS 证书需要 Tailscale 管理台开通（`DNS` 页 → `HTTPS Certificates`）。
+> 没开通时 `tailscale cert` 返回 500，serve 会降级成 `http://<domain>/` —— 仍然可用（tailnet 内本来
+> 就是加密的 WireGuard），只是没有浏览器级的 TLS。
+
 ## 环境要求
 
 | 项 | 版本 |
@@ -180,7 +219,7 @@ python dsh_gui.py --selftest        # 主窗口 + 大环 / 主按钮 / 抽屉 / 
 python dsh_gui.py --stop-selftest   # 「停止」整条链路（假进程 + 注入端口探测）
 ```
 
-共 203 个用例。测试只用标准库，用 `tempfile` 造假目录树，不依赖本机任何真实安装路径；两个自检
+共 269 个用例。测试只用标准库，用 `tempfile` 造假目录树，不依赖本机任何真实安装路径；两个自检
 同样把进程与端口探测全部注入（不碰真实 DSH 进程、也不要求 3080 空闲），所以在 CI 上可跑。
 GUI 用例需要 `customtkinter` / `pillow` / `qrcode`，没装时会跳过；托盘用例用假 pystray，
 不需要真的托盘环境。
