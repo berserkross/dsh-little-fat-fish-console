@@ -1,4 +1,4 @@
-"""DSH 控制台 - DeepSeek Harness 桌面图形界面 (customtkinter · 蓝鲸主题)
+"""小肥鱼控制台 - DeepSeek Harness 桌面图形界面 (customtkinter · 蓝鲸主题)
 
 双击 exe / 运行本脚本即可打开窗口。功能与旧版一致：
   启动 Harness、开启手机访问（端口转发+信任来源）、恢复本机、复制手机地址、
@@ -43,7 +43,7 @@ TOKEN_LOG = CFG.token_log
 ICON_FILE = resources.icon_path()
 CREATE_NO_WINDOW = 0x08000000      # 自检里伪造进程时别闪出控制台窗口
 PORT = CFG.port
-APP_TITLE = "DSH 控制台"            # 单实例守卫靠窗口标题找回已有窗口，两处必须一致
+APP_TITLE = "小肥鱼控制台"          # 单实例守卫靠窗口标题找回已有窗口，两处必须一致
 _APP = None                        # 当前窗口实例：未捕获异常写日志用（见 _report）
 MAX_LOG_LINES = 2000               # 日志框行数上限：超过就从顶部滚动丢弃旧行
 LOG_POLL_INTERVAL = 0.4            # 跟随真实日志的轮询间隔（秒，≥0.3，不许 busy loop）
@@ -616,6 +616,11 @@ class ConsoleApp(ctk.CTk):
         self._grid_holder = holder
         for index in range(GRID_SUBCOLS):
             holder.grid_columnconfigure(index, weight=1, uniform="grp")
+        # 三张组卡由 _layout_group_cards() 用 place 摆放：卡宽必须严格相等，
+        # 交给 grid 的 uniform 分列时余下的 1~2 像素会被 Tk 摊给某几列，
+        # 同一列的 chip 右沿就会 441/442 混着。重摆由根窗口的 <Configure> 驱动 ——
+        # CTkFrame.bind 只把回调挂到内部 canvas 上，容器自己的 <Configure> 一次都不会来。
+
         # 三组按钮行数取最大值（手机访问 5 项 = 3 行）：行数少的组把多出来的一行留白，
         # 于是同一窗口里每颗 chip 的高度处处相同 —— 否则「服务」2 行会被拉成「手机访问」
         # 3 行的 1.5 倍高，看着像两种控件。
@@ -753,6 +758,10 @@ class ConsoleApp(ctk.CTk):
         if event.widget is not self:
             return
         self._reflow(event.width)
+        # 列数没变时 _reflow 会早退，但卡宽/卡高仍要跟着容器走 —— 每次 Configure 都摆一遍；
+        # 同一个 Configure 里容器尺寸可能还没结算，等空闲再摆一次收口。
+        self._layout_group_cards()
+        self.after_idle(self._layout_group_cards)
         self._schedule_glass()
 
     def _reflow(self, width_px: int) -> None:
@@ -765,25 +774,19 @@ class ConsoleApp(ctk.CTk):
         if columns == self._columns:
             return
         self._columns = columns
-        span = GRID_SUBCOLS // columns
         rows = max(1, (len(self._groups) + columns - 1) // columns)
         holder = self._grid_holder
         # 容器左右内缩 PAD-GAP//2、每张卡左右各 GAP//2：卡宽 = 列宽 - GAP（三组严格等宽），
         # 卡间距 = GAP，最外侧正好落在 PAD 上，与头部/主按钮/底栏同一条竖线。
         holder.grid(row=3, column=0, columnspan=GRID_SUBCOLS, sticky="nsew",
                     padx=PAD - GAP // 2, pady=(0, 0))
-        for index, card in enumerate(self._groups):
-            row, column = divmod(index, columns)
-            in_row = min(columns, len(self._groups) - row * columns)
-            # 某行只剩一张卡时它通栏（宽 = 该行整行可用宽），不留半行空洞
-            alone = column == in_row - 1 and column == 0
-            card.grid(row=row, column=column * span,
-                      columnspan=GRID_SUBCOLS - column * span if alone else span,
-                      sticky="nsew", padx=(GAP // 2, GAP // 2),
-                      pady=(0, 0 if row == rows - 1 else GAP))
-            card.grid_rowconfigure(0, weight=0)
-        for row_index in range(rows):
-            holder.grid_rowconfigure(row_index, weight=1, uniform="grow")
+        # 行权重要整体重置，不能只配当前 rows：窄→宽回落后（3 组从 2 行变回 1 行）
+        # 上一次留下的空壳行仍是 weight=1，会和唯一那行平分高度，卡片被夹扁、芯片整组消失。
+        for row_index in range(GRID_SUBCOLS):
+            live = row_index < rows
+            holder.grid_rowconfigure(row_index, weight=1 if live else 0,
+                                     uniform="grow" if live else "")
+        self._layout_group_cards()
         log_row = 4
         self._log_card.grid(row=log_row, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
                             padx=PAD, pady=(GAP, 0))
@@ -792,6 +795,36 @@ class ConsoleApp(ctk.CTk):
         # 剩余高度只给组卡那一行（第 3 行）；日志行与底栏都按内容高
         for row_index in range(log_row + 2):
             self.grid_rowconfigure(row_index, weight=1 if row_index == 3 else 0)
+
+    def _layout_group_cards(self) -> None:
+        """用设备像素矩形摆放三张组卡：三组卡宽严格相等，余数只落进卡间距。
+
+        cw = (W - (cols-1)*GAP) // cols，剩下的 0~cols-1 像素按列依次加进左侧间隙，
+        所以卡宽处处相同（同一列 chip 的 x0/x1 因此逐像素一致），右侧不留大缝。
+        卡高 = 行高，由容器高度均分 —— 与历史状态无关：先窄后宽回落到 960x700 与
+        全新启动同尺寸算出来的矩形完全相同。
+        """
+        holder = self._grid_holder
+        cards = self._groups
+        cols = self._columns or 1
+        try:
+            width, height = holder.winfo_width(), holder.winfo_height()
+        except Exception:      # noqa: BLE001 - 控件替身 / 窗口已销毁
+            return
+        if not cards or width <= 1 or height <= 1:
+            return
+        gap = self._px(GAP)
+        rows = max(1, (len(cards) + cols - 1) // cols)
+        card_w = max(1, (width - (cols - 1) * gap) // cols)
+        slack = max(0, width - (cols - 1) * gap - card_w * cols)   # 0 ~ cols-1
+        row_h = max(1, (height - (rows - 1) * gap) // rows)
+        for index, card in enumerate(cards):
+            row, column = divmod(index, cols)
+            in_row = min(cols, len(cards) - row * cols)
+            alone = column == 0 and in_row == 1
+            x = 0 if alone else column * (card_w + gap) + min(column, slack)
+            y = row * (row_h + gap)
+            card.place(x=x, y=y, width=width if alone else card_w, height=row_h)
 
     def _schedule_glass(self) -> None:
         """<Configure> 会被拖动窗口逐像素触发：防抖，停手 140ms 后再画一次。"""
@@ -2003,10 +2036,10 @@ def main() -> int:
         woken = single.signal_activate()
         if woken or single.focus_window(APP_TITLE):
             # 已经把它拉到眼前了，再弹一个「你在重复打开」的对话框只是多要一次点击。
-            print("已经有一个 DSH 控制台在运行，已把它的窗口显示出来；这个窗口不再打开。")
+            print("已经有一个 小肥鱼控制台 在运行，已把它的窗口显示出来；这个窗口不再打开。")
         else:
             _info_blocking(APP_TITLE,
-                           "已经有一个 DSH 控制台在运行（没能把它切到前台，请从任务栏打开）。"
+                           "已经有一个 小肥鱼控制台 在运行（没能把它切到前台，请从任务栏打开）。"
                            "\n这个窗口不再打开。")
         return 0
     if want_harness is not None or want_port is not None:

@@ -61,7 +61,7 @@ def acquire(name: str = MUTEX_NAME) -> Guard:
         return Guard(None, f"CreateMutexW 失败（错误码 {last_error}）")
     _HANDLE = handle
     if last_error == ERROR_ALREADY_EXISTS:
-        return Guard(False, "已经有一个 DSH 控制台在运行")
+        return Guard(False, "已经有一个 小肥鱼控制台 在运行")
     return Guard(True)
 
 

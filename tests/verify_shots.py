@@ -166,6 +166,45 @@ def main() -> int:
           "rows=%d rows_lines=%d" % (m_rows, m_lines))
     check(mark.get("rows_ok") == "True", "marker rows_ok", str(mark.get("rows_ok")))
 
+    print("[A5] 三组卡 + 13 个芯片：窄→宽回落不夹扁，芯片完整落在卡内")
+    scen = {s["tag"]: s for s in
+            json.loads((OUT / "layout-scenarios.json").read_text(encoding="utf-8"))}
+    for tag in ("960x700-fresh", "900x900", "640x900", "960x700-after-narrow"):
+        s = scen[tag]
+        print("    %-20s 窗口=%s 卡高=%s" % (tag, s["window"], [c["rect"][3] for c in s["cards"]]))
+        for card in s["cards"]:
+            print("        %-5s 卡 rect=%s" % (card["title"], card["rect"]))
+        for chip in s["chips"]:
+            print("        %-5s %-16s rect=%s" % (chip["group"], chip["text"], chip["rect"]))
+        check(len(s["chips"]) == 13, tag + " 13 个芯片全部在位", "n=%d" % len(s["chips"]))
+        stray = []
+        for card in s["cards"]:
+            for chip in s["chips"]:
+                if chip["group"] != card["title"]:
+                    continue
+                cx0, cy0, cw, ch_ = chip["rect"]
+                gx0, gy0, gw, gh = card["rect"]
+                if not (cx0 >= gx0 and cy0 >= gy0 and cx0 + cw <= gx0 + gw
+                        and cy0 + ch_ <= gy0 + gh):
+                    stray.append("%s/%s %s 不在 %s 内"
+                                 % (chip["group"], chip["text"], chip["rect"], card["rect"]))
+        check(not stray, tag + " 每个芯片完整落在所属卡内", "; ".join(stray[:3]))
+        check(all(c["rect"][3] > 100 for c in s["cards"]),
+              tag + " 三组卡高度都可见（>100 设备像素）",
+              str([c["rect"][3] for c in s["cards"]]))
+    fresh, back = scen["960x700-fresh"], scen["960x700-after-narrow"]
+    deltas = [abs(a["rect"][3] - b["rect"][3])
+              for a, b in zip(fresh["cards"], back["cards"])]
+    check(max(deltas) <= 2, "窄→宽回落后卡高与全新启动差 <= 2 设备像素",
+          "fresh=%s back=%s 差=%s"
+          % ([c["rect"][3] for c in fresh["cards"]],
+             [c["rect"][3] for c in back["cards"]], deltas))
+    for name in ("07-empty-state.png", "08-white-backdrop.png"):
+        info = layout_of(name)
+        print("    %-22s group0=%s log_text=%s" % (name, info["group0"], info["log_text"]))
+        check(info["group0"][3] >= 300, name + " 组卡高 >= 300 设备像素（13 芯片可见）",
+              "group0=%s" % (info["group0"],))
+
     print()
     print("VERIFY %s (%d 项失败)" % ("OK" if not fails else "FAILED", len(fails)))
     return 0 if not fails else 1

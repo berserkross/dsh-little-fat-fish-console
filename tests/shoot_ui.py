@@ -11,6 +11,7 @@ r"""截图自检（批次 G）：把每个状态抓成 PNG，存 %TEMP%\ui_v4\�
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -176,6 +177,25 @@ def dump_layout(app, name: str) -> None:
     (OUT / ("layout-%s.json" % stem)).write_text(json.dumps(rects, indent=1), encoding="utf-8")
 
 
+def probe_layout(app) -> dict:
+    """量一遍当前窗口：三张组卡 + 13 个芯片的设备像素矩形（相对窗口左上角）。"""
+    ox, oy = app.winfo_rootx(), app.winfo_rooty()
+
+    def rect(widget) -> list:
+        return [widget.winfo_rootx() - ox, widget.winfo_rooty() - oy,
+                widget.winfo_width(), widget.winfo_height()]
+
+    cards, chips = [], []
+    for group_index, (title, entries) in enumerate(dsh_gui.ACTION_GROUPS):
+        card = app._groups[group_index]
+        cards.append({"title": title, "rect": rect(card)})
+        for _icon, text, name in entries:
+            button = app._group_buttons[name]
+            chips.append({"group": title, "text": text, "rect": rect(button)})
+    return {"window": [app.winfo_width(), app.winfo_height()],
+            "cards": cards, "chips": chips}
+
+
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     app = dsh_gui.ConsoleApp()
@@ -186,6 +206,19 @@ def main() -> int:
     app.attributes("-topmost", True)
     app.lift()
     settle(app, 1.2)
+
+    # 布局取证：四种情形各量一次（全新 960x700 → 900x900 → 640x900 → 回 960x700）。
+    # 第三种会按 columns=2 摆两行组卡；第四种验证「窄→宽回落」不会残留上一次的行权重。
+    scenarios = []
+
+    def snapshot(tag: str) -> None:
+        settle(app, 0.2)
+        scenarios.append(dict(tag=tag, **probe_layout(app)))
+        print("probe %-22s window=%s 卡高=%s"
+              % (tag, scenarios[-1]["window"],
+                 [c["rect"][3] for c in scenarios[-1]["cards"]]))
+
+    snapshot("960x700-fresh")
 
     # 01 常态（未运行、空日志）
     clear_selection(app)
@@ -211,18 +244,23 @@ def main() -> int:
     # 04 900x900 窄窗（2 列组卡 + 第三组通栏）
     app.geometry("900x900")
     settle(app, 0.8)
+    snapshot("900x900")
     clear_selection(app)
     grab(app, "04-narrow-900x900.png")
 
     # 04b 640x900：真正掉到 2 列组卡（第三组独占一整行并通栏）
     app.geometry("640x900")
     settle(app, 0.8)
+    snapshot("640x900")
     clear_selection(app)
     grab(app, "04b-narrow-640x900.png")
 
     # 05 二维码浮层
     app.geometry("%dx%d" % ui_theme.WINDOW_SIZE)
     settle(app, 0.6)
+    snapshot("960x700-after-narrow")
+    (OUT / "layout-scenarios.json").write_text(
+        json.dumps(scenarios, indent=1), encoding="utf-8")
     app._token = "selftest-token"
     app.on_phone_access()
     settle(app, 0.5)

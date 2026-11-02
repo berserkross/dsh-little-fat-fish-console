@@ -124,7 +124,7 @@ python .\dsh_gui.py --harness="D:\apps\deepseek-harness" --port=3080   # 等号�
 ### 多实例与「采纳运行中的实例」
 
 同一个窗口只允许开一个：程序启动时先抢 Windows 命名互斥体 `Local\DshConsole.SingleInstance`，
-抢不到就把已有的「DSH 控制台」窗口切到前台，然后以退出码 0 结束（不会再弹出第二个主窗口）。
+抢不到就把已有的「小肥鱼控制台」窗口切到前台，然后以退出码 0 结束（不会再弹出第二个主窗口）。
 非 Windows 或系统调用不可用时这层检查自动跳过，只在日志里留一行，不影响启动。
 
 另一件事是「跑着的 DSH 不是记录里那份」。当端口被监听、却找不到本机 `bin.js` 对应的 `node` 进程时，
@@ -153,7 +153,7 @@ py -3.11 -m PyInstaller --noconfirm DSHConsole.spec
 
 产物是 **onefile** 的 `dist\DSHConsole.exe`（2.1.0 实测 32,172,230 B，签名后 32,179,368 B）。
 PE 版本资源由 `version_info.txt` 提供，资源管理器「属性 → 详细信息」能看到 `FileVersion 2.1.0.0`、
-`ProductName DSH 控制台（小肥鱼控制台）`、`CompanyName berserkross`。
+`ProductName 小肥鱼控制台`、`CompanyName berserkross`。
 本机实测：Python 3.11.9 + PyInstaller 6.22.3，干净构建约 21 秒。
 
 验证产物（exe 是 GUI 子系统，控制台看不到它的 `print`，所以用 `Start-Process` 拿退出码）：
@@ -234,7 +234,7 @@ v1 的硬编码已在 v2「批次 A（可移植性）」修掉：
 刷新从 14.4 秒压到 2.1 秒（一次 PowerShell 调用替代七次独立 spawn）。
 
 批次 E（可发布构建）已完成：`version_info.txt` 给产物加上 PE 版本资源（`FileVersion 2.0.0.0`、
-`ProductName DSH 控制台（小肥鱼控制台）`、`CompanyName berserkross`、MIT 版权与仓库地址），
+`ProductName 小肥鱼控制台`、`CompanyName berserkross`、MIT 版权与仓库地址），
 spec 补 `version='version_info.txt'` 并把产物名统一为 `DSHConsole.exe`；冻结态两条自检
 （`--selftest` / `--stop-selftest`）退出码均为 0，`.rsrc` 由 71,912 B 增至 72,896 B。
 
