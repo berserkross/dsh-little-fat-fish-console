@@ -163,9 +163,9 @@ py -3.11 -m pip install "pyinstaller>=6,<7"
 py -3.11 -m PyInstaller --noconfirm DSHConsole.spec
 ```
 
-产物是 **onefile** 的 `dist\DSHConsole.exe`（2.2.1 实测 32,230,365 B，签名后 32,237,504 B）。
-PE 版本资源由 `version_info.txt` 提供，资源管理器「属性 → 详细信息」能看到 `FileVersion 2.2.1.0`、
-`ProductName DSH 控制台（小肥鱼控制台）`、`CompanyName berserkross`。
+产物是 **onefile** 的 `dist\DSHConsole.exe`（2.2.2 实测 32,247,492 B，签名后 32,254,632 B）。
+PE 版本资源由 `version_info.txt` 提供，资源管理器「属性 → 详细信息」能看到 `FileVersion 2.2.2.0`、
+`ProductName 小肥鱼控制台`、`CompanyName berserkross`。
 本机实测：Python 3.11.9 + PyInstaller 6.22.3，干净构建约 21 秒。
 
 验证产物（exe 是 GUI 子系统，控制台看不到它的 `print`，所以用 `Start-Process` 拿退出码）：
