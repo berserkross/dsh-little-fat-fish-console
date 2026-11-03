@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-11-04
+
+### 修复
+
+- 「重启 DSH」以前只关闭、不重启：GUI 把 `-ServeHost` / `-ForceStart` 传给随包脚本，而
+  `launch-dsh.ps1` 的 `param` 里没有这两个名字，PowerShell 在参数绑定阶段就失败，脚本一行都没跑。
+  现在启动与重启都直接用 `Start-Process` 拉起 `dsh web`，脚本只作回退路径。
+- 直连启动补上 `--trusted-host`（脚本那一版从来不传，重启出来的 DSH 认不得 tailnet 域名，
+  手机访问回来就是 401），并显式把 `DSH_HOME` 交给子进程。
+- 启动前清空 `dsh-web.stdout.log` / `dsh-web.stderr.log`，否则控制台读到的是上一次运行留下的
+  过期 token，二维码扫出来是失效的。
+
+### 新增
+
+- 「免 token 直连」：在 tailnet 地址的 3081 上开一道本地门，手机打开 `http://<tailnet-ip>:3081`
+  即 302 到带 token 的 3080，由 DSH 自己种 cookie；之后直接开 3080 也能进，直到 DSH 重启换 token。
+  拿到 tailnet 地址时自动开一次，手动关掉之后不再自己打开。
+
 ## [2.2.1] - 2026-11-03
 
 ### 界面
