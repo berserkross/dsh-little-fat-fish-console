@@ -6,10 +6,11 @@
 DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双击 exe 或运行脚本即可打开窗口，
 用来在本机启动 / 停止 DSH Web 服务、把服务临时开给手机访问、以及随时看状态。
 
-> **当前版本 2.2.0**（2026-11-03）：v2 四个批次全部落地——可移植配置层、结构化探测与五态状态机、
+> **当前版本 2.2.1**（2026-11-03）：v2 四个批次全部落地——可移植配置层、结构化探测与五态状态机、
 > 托盘常驻 / 日志跟随 / 脱敏诊断包 / 串行命令队列、可发布构建（PE 版本信息 + PyInstaller onefile），
 > 界面重排（画出来的玻璃 + ico 头像 + 按行日志 + 三组对齐的功能网格 + ⋯ 抽屉与浮层），
 > 以及手机访问的候选/策略层（Tailscale serve 优先、回环地址整条剔除）。
+> 2.2.1 起窗口可以缩到最小尺寸：内容整体纵向滚动，底栏不再被裁掉。
 > 发布产物**不附带 exe**（原样源码与构建命令见 `docs\build-and-signing.md`）。自己构建出的 exe 未签名时，
 > 首次运行 Windows 会弹 SmartScreen「未知发布者」，点「更多信息 → 仍要运行」即可；只想本机消除这条提示，
 > 可用 `scripts\sign-self-signed.ps1` 自签名 —— 那对本机有效、对别人的机器无效，见 `docs\self-signed-local.md`。
@@ -161,8 +162,8 @@ py -3.11 -m pip install "pyinstaller>=6,<7"
 py -3.11 -m PyInstaller --noconfirm DSHConsole.spec
 ```
 
-产物是 **onefile** 的 `dist\DSHConsole.exe`（2.2.0 实测 32,228,682 B，签名后 32,235,824 B）。
-PE 版本资源由 `version_info.txt` 提供，资源管理器「属性 → 详细信息」能看到 `FileVersion 2.2.0.0`、
+产物是 **onefile** 的 `dist\DSHConsole.exe`（2.2.1 实测 32,230,365 B，签名后 32,237,504 B）。
+PE 版本资源由 `version_info.txt` 提供，资源管理器「属性 → 详细信息」能看到 `FileVersion 2.2.1.0`、
 `ProductName DSH 控制台（小肥鱼控制台）`、`CompanyName berserkross`。
 本机实测：Python 3.11.9 + PyInstaller 6.22.3，干净构建约 21 秒。
 
