@@ -41,6 +41,19 @@ py -3.11 -m PyInstaller --noconfirm DSHConsole.spec
 缓存全部被复用，输出里是 `checking Analysis` / `checking EXE` 而不是 `Building …`）。
 要保证干净重建就先删 `build/`、`dist/`，或加 `--clean`。
 
+### 构建前先清掉 `TCL_LIBRARY` / `TK_LIBRARY`（踩过，务必看）
+
+从跑过 onefile exe 的同一个终端里构建时，这两个变量可能还指着 `%TEMP%\_MEIxxxx\_tcl_data`
+—— 那个临时目录早就被删了。PyInstaller 的自检导入会因此判定 tkinter 不可用并**静默排除**它：
+产物从 32 MB 掉到 29 MB，双击立刻弹 `Unhandled exception in script`
+（`ModuleNotFoundError: No module named 'tkinter'`），构建日志里一行错误都没有。
+
+```powershell
+Remove-Item Env:TCL_LIBRARY, Env:TK_LIBRARY -ErrorAction SilentlyContinue
+```
+
+判据：构建后 `build\DSHConsole\Analysis-00.toc` 里 `_tkinter` 出现 4 次；少了就是被排除了。
+
 预期输出末尾出现这两行，缺一不可：
 
 ```text
