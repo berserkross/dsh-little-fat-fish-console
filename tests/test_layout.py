@@ -60,12 +60,16 @@ class ActionGroupsTests(unittest.TestCase):
         for name in ("_open_drawer", "_drawer_items", "_place_drawer"):
             self.assertFalse(hasattr(dsh_gui.ConsoleApp, name), name)
 
-    def test_start_and_stop_live_only_on_the_primary_button(self):
-        """同一个动作只许一个入口：启停归主按钮，服务组只留从属动作。"""
+    def test_start_stays_on_the_primary_button_and_stop_is_also_a_chip(self):
+        """启动只留主按钮；关闭另给一颗芯片（用户明确要求，服务组本来就该能关）。
+
+        两条并存不是「同一动作两个入口」：主按钮是随状态变的那一颗，
+        服务组的「关闭 DSH」是常驻的从属动作，与「重启 DSH」同一排。
+        """
         names = [name for _t, _i, _t2, name in _entries()]
         self.assertNotIn("on_start", names)
-        self.assertNotIn("on_stop", names)
-        for name in ("on_restart", "on_refresh", "on_change_port"):
+        self.assertEqual(names.count("on_stop"), 1)
+        for name in ("on_restart", "on_refresh", "on_change_port", "on_stop"):
             self.assertIn(name, names)
         # 启停没丢：主按钮的映射里仍在
         got = {dsh_gui.primary_action(phase)[1]
@@ -73,8 +77,8 @@ class ActionGroupsTests(unittest.TestCase):
         self.assertEqual(got, {"start", "stop"})
 
     def test_group_count_matches_the_spec(self):
-        """15 项 → 13 项：启停合并到主按钮后，服务组少两颗。"""
-        self.assertEqual(len(_entries()), 13)
+        """14 项：启停合并到主按钮后少两颗，服务组再加回一颗「关闭 DSH」。"""
+        self.assertEqual(len(_entries()), 14)
 
 
 class LayoutBudgetTests(unittest.TestCase):

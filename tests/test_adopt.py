@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from dshconsole import adopt, config
+from dshconsole import adopt, config, psrun
 
 REAL_TAIL = Path("node_modules") / "@deepseek-ai" / "dsh" / "lib" / "bin.js"
 
@@ -112,6 +112,74 @@ class AdoptTests(unittest.TestCase):
         self.assertIsNone(new)
         self.assertIn("--harness", message)
         self.assertFalse(self.cfg_path.exists())
+
+
+class PortOwnerTests(unittest.TestCase):
+    """端口占用者：「接管」最硬的一条线索，解析与失败都要说得清。"""
+
+    def _runner(self, payload):
+        return lambda *_a, **_k: payload
+
+    def test_parse_returns_pid_and_command_line(self):
+        got = adopt.parse_port_owner('{"pid":4242,"command_line":"node x"}')
+        self.assertEqual(got, (4242, "node x"))
+
+    def test_null_and_garbage_are_none(self):
+        for raw in ("", "null", "NULL", "not json", "[]"):
+            self.assertIsNone(adopt.parse_port_owner(raw))
+
+    def test_bin_js_is_picked_out_of_the_command_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_js = make_install(Path(tmp) / "harness")
+            line = f'"node.EXE" "{bin_js}" web --port 3080'
+            self.assertTrue(adopt.bin_js_from_command_line(line).endswith("bin.js"))
+
+    def test_command_line_without_bin_js_is_refused(self):
+        self.assertIsNone(adopt.bin_js_from_command_line("notepad.exe foo.txt"))
+
+    def test_candidate_from_port_owner_carries_via_port(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_js = make_install(Path(tmp) / "harness")
+            payload = psrun.PsResult(
+                True, 0, json.dumps({"pid": 4242, "command_line": f'node "{bin_js}" web'}),
+                "", None)
+            cand, why = adopt.from_port_owner(3080, runner=self._runner(payload))
+        self.assertIsNone(why)
+        self.assertEqual((cand.pid, cand.via), (4242, adopt.VIA_PORT))
+        self.assertIn("正在监听端口", cand.label)
+
+    def test_runner_failure_is_reported(self):
+        cand, why = adopt.from_port_owner(
+            3080, runner=self._runner(psrun.PsResult(False, 1, "", "boom", None)))
+        self.assertIsNone(cand)
+        self.assertIn("查端口", why)
+
+    def test_free_port_is_not_an_error(self):
+        cand, why = adopt.from_port_owner(
+            3080, runner=self._runner(psrun.PsResult(True, 0, "null", "", None)))
+        self.assertIsNone(cand)
+        self.assertIsNone(why)
+
+    def test_owner_without_bin_js_says_which_pid(self):
+        payload = psrun.PsResult(
+            True, 0, json.dumps({"pid": 999, "command_line": "python server.py"}), "", None)
+        cand, why = adopt.from_port_owner(3080, runner=self._runner(payload))
+        self.assertIsNone(cand)
+        self.assertIn("999", why)
+
+
+class MergeTests(unittest.TestCase):
+    def test_dedupes_by_pid_and_keeps_order(self):
+        port = adopt.Candidate(pid=1, bin_js="a", harness=None, via=adopt.VIA_PORT)
+        same = adopt.Candidate(pid=1, bin_js="a", harness=None)
+        other = adopt.Candidate(pid=2, bin_js="b", harness=None)
+        got = adopt.merge([port], [same, other])
+        self.assertEqual([c.pid for c in got], [1, 2])
+        self.assertEqual(got[0].via, adopt.VIA_PORT)
+
+    def test_limit_keeps_the_first(self):
+        cands = [adopt.Candidate(pid=i, bin_js="x", harness=None) for i in range(1, 6)]
+        self.assertEqual([c.pid for c in adopt.merge(cands)], [1, 2, 3])
 
 
 if __name__ == "__main__":

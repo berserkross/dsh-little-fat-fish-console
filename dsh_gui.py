@@ -79,11 +79,35 @@ def primary_action(phase) -> tuple[str, str, str, str]:
 # 「启动 DSH / 停止 DSH」不在这里：启停只留主按钮那一颗（见 primary_action），
 # 同一个动作有两个入口时，用户得先判断该点哪个 —— 服务组只管重启/刷新/换端口这类
 # 「不该有第二次确认」的从属动作。
+def _candidates_for(state: "status.Status", port: int, port_owner, log) -> list:
+    """端口被占用时找「该接管哪处安装」：先问这个端口是谁在听，再退回命令行扫描。
+
+    旧版只按命令行里的 bin.js 认候选，npx 缓存或换过 node 路径的实例会漏掉，
+    于是按钮压根不出现 —— 端口明明被占着，用户却只能手改 config.json。
+    端口占用者是最硬的线索（它就是正在应答这个端口的那一个），所以排第一位。
+    port_owner 为 None（控件替身 / 自检场景）就只走命令行这一路。
+    """
+    if state.phase is not status.Phase.DEGRADED:
+        return []
+    found = adopt.from_processes(state.others)
+    if state.port_open and port_owner is not None:
+        try:
+            owner, why = port_owner(port)
+        except Exception as exc:      # noqa: BLE001 - 探测炸了不该带崩刷新
+            owner, why = None, f"查端口占用者失败：{exc}"
+        if owner is not None:
+            found = adopt.merge([owner], found)
+        elif why:
+            log(why)
+    return adopt.merge(found)
+
+
 ACTION_GROUPS: tuple = (
     ("服务", (
         ("↻", "重启 DSH", "on_restart"),
         ("◌", "刷新状态", "on_refresh"),
         ("⚙", "切换 Web 端口…", "on_change_port"),
+        ("■", "关闭 DSH", "on_stop"),
     )),
     ("手机访问", (
         ("▦", "手机访问二维码", "on_phone_access"),
@@ -351,6 +375,7 @@ class ConsoleApp(ctk.CTk):
         self._port_open = port_open
         self._status_provider = self._load_status
         self._phone_planner = phone.detect_plan     # tailscale 探测/编排入口
+        self._port_owner = adopt.from_port_owner    # 「这个端口是谁在听」：探测层可注入
         self._serve_reset = tailscale.reset_serve    # 恢复本机前先撤掉 serve
         self._run_switch = run_ps                    # 提权切换脚本入口
         self._snapshot = snapshot.Snapshot(lambda: self._status_provider(), ttl=STATUS_TTL)
@@ -1314,8 +1339,9 @@ class ConsoleApp(ctk.CTk):
             stamp = time.strftime("[%H:%M:%S] ")
             self._append_log([stamp + note for note in state.notes])
         self._log_net_once(state)
-        self._candidates = (adopt.from_processes(state.others)
-                            if state.phase is status.Phase.DEGRADED else [])
+        self._candidates = _candidates_for(state, PORT,
+                                           getattr(self, "_port_owner", None),
+                                           self.logline)
         self._sync_adopt_button()
 
     def _sync_detail(self, state: "status.Status") -> None:
@@ -1449,7 +1475,24 @@ class ConsoleApp(ctk.CTk):
         """重启 = 停止 + 启动：两条既有路径按顺序走，不新增业务分支。"""
         self._submit("重启 DSH", self._restart)
 
+    def _wait_port(self, want_open: bool, timeout: float) -> bool:
+        """等端口变成想要的样子；超时就返回当下的真实状态（调用方据此说真话）。"""
+        deadline = time.time() + timeout
+        while True:
+            current = bool(self._port_open())
+            if current is want_open:
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.4)
+
     def _restart(self) -> None:
+        """重启 = 真的先停再起：停完看到端口关掉才起，起完看到端口打开才报完成。
+
+        旧版停在「_stop() 之后直接 _start()」：而 _start() 有一条「端口在线就别再拉」
+        的守卫，上一份进程退得慢（或端口其实被另一处安装占着）时它静默跳过，
+        于是重启看起来完全没反应。现在两步各自验证，失败就说清失败在哪。
+        """
         pids, err = self._pids_provider()
         if pids is None:
             self.log_async(f"未知：node 进程查不到（{err}），重启前不结束任何进程。")
@@ -1464,7 +1507,20 @@ class ConsoleApp(ctk.CTk):
                 self.log_async("已取消重启，未结束任何进程。")
                 return
             self._stop(pids)
-        self._start()
+            if not self._wait_port(False, 10.0):
+                self.log_async(f"重启中止：{PORT} 仍然被占用，没有再拉起第二份 DSH。"
+                               "若占用者是另一处安装，点「改为控制运行中的实例」接管它；"
+                               "否则先「关闭 DSH」或手动结束占用进程。")
+                self.refresh(force=True)
+                return
+        self._start(force=True)
+        if self._wait_port(True, 25.0):
+            left, _err = self._pids_provider()
+            shown = "、".join(str(pid) for pid in left) if left else "未识别"
+            self.log_async(f"重启完成：{PORT} 已在线（PID {shown}）。")
+        else:
+            self.log_async(f"重启未完成：{PORT} 在 25 秒内没有恢复监听，原因见上方启动输出。")
+        self.refresh(force=True)
 
     def on_phone_access(self) -> None:
         """手机访问浮层：地址下拉 + 二维码 + 复制；主界面不再常驻二维码。"""
@@ -1568,6 +1624,16 @@ class ConsoleApp(ctk.CTk):
         CFG, HARNESS, PORT = new_cfg, new_cfg.harness, new_cfg.port
         TOKEN_LOG = new_cfg.token_log
         self.log_async(reason)
+        # 接管完要当场说清「接管到的这处到底在不在线」：config 指过去不等于它在跑。
+        # （控件替身没有 _port_open，跳过这句判定，别为了测试把真实探测塞进去。）
+        port_open = getattr(self, "_port_open", None)
+        if port_open is None:
+            pass
+        elif port_open():
+            self.log_async(f"接管完成：{PORT} 正在应答，后续启停都作用于这处安装。")
+        else:
+            self.log_async(f"注意：配置已指向 {new_cfg.harness}，但 {PORT} 现在没有应答"
+                           "（那处实例可能刚好退出；直接点「启动 DSH」即可）。")
         # 采纳成功就没得选了：先把按钮收起来，别让用户对着一个过时的按钮再点一次。
         # （完整重探由 _wrap 的 finally 触发，探测要十几秒，等它回来才收太迟钝。）
         self._candidates = []
@@ -1590,10 +1656,11 @@ class ConsoleApp(ctk.CTk):
     def on_start(self) -> None:
         self._submit("启动 DeepSeek Harness", self._start)
 
-    def _start(self) -> None:
+    def _start(self, force: bool = False) -> None:
         # 「启动 DSH」现在是常驻可点的一颗按钮（不再只能从主按钮进去），
         # 所以这里加一道守卫：端口已经在线就不再加拉一份 DSH。
-        if self._port_open():
+        # force=True 只给重启用：重启已经自己确认过端口关掉了，守卫在这儿会把它挡死。
+        if not force and self._port_open():
             self.log_async("已经在运行（端口在线），跳过启动，避免起来第二份 DSH。")
             return
         self.log_async("正在启动 DeepSeek Harness…")
