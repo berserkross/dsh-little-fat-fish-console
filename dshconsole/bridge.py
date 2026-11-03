@@ -10,6 +10,7 @@ tailnet 成员开放；它在效果上等于「把 token 贴在门上」，因�
 """
 from __future__ import annotations
 
+import http.client
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
@@ -27,6 +28,43 @@ NO_TOKEN_PAGE = """<!doctype html><meta charset="utf-8">
 def redirect_url(host: str, dsh_port: int, token: str) -> str:
     """带 token 的落点。path 一律回到根：DSH 认了 token 会自己种 cookie 再跳走。"""
     return f"http://{host}:{int(dsh_port)}/?token={token}"
+
+
+def target_authority(authority: str, dsh_port: int = 3080) -> str:
+    """手机落点用的 authority：换掉端口，主机名与主机形式保持原样。
+
+    手机是开 http://<tailnet-ip>:3081 进来的，cookie 却与 :3080 那个 authority 绑定，
+    所以换 cookie 和跳转都必须指向 3080；Host 没带端口（走的 :80 serve）就原样保留。
+    """
+    host, sep, _port = authority.rpartition(":")
+    if not sep or not host:
+        return authority
+    return f"{host}:{int(dsh_port)}"
+
+
+def mint_cookie(authority: str, token: str, dsh_port: int = 3080,
+                timeout: float = 6.0, client=None) -> str | None:
+    """用「手机此刻用的那个 Host」去换一次 cookie，返回 DSH 给的 Set-Cookie 原文。
+
+    为什么要服务端来换：cookie 与 Host authority 绑定（见 dsh-client-connection 的
+    requestAudience / authenticate），手机自己带 token 跳转时，中间任何一层改写 Host
+    都会让换出来的 cookie 用不了。这里用请求里的 Host 去换，换到的正是手机能用的那块。
+    换不到就返回 None，调用方退回「带 token 跳转」那条老路。
+    """
+    factory = client or (lambda host, port, timeout: http.client.HTTPConnection(host, port, timeout=timeout))
+    try:
+        conn = factory("127.0.0.1", int(dsh_port), timeout)
+        try:
+            conn.request("GET", f"/?token={token}", headers={"Host": authority})
+            response = conn.getresponse()
+            response.read()
+            if response.status not in (200, 302, 303, 307):
+                return None
+            return response.getheader("Set-Cookie")
+        finally:
+            conn.close()
+    except OSError:
+        return None
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -50,9 +88,15 @@ class _Handler(BaseHTTPRequestHandler):
             if body:
                 self.wfile.write(payload)
             return
-        location = self.server.target_url(token)        # type: ignore[attr-defined]
+        requested = self.headers.get("Host") or self.server.default_authority   # type: ignore[attr-defined]
+        authority = target_authority(requested, self.server.dsh_port)           # type: ignore[attr-defined]
+        cookie = self.server.mint(authority, token)     # type: ignore[attr-defined]
+        # 换到了 cookie 就把它直接交给手机，地址里不再出现 token：手机之后自己开
+        # http://<authority>/ 也进得去（cookie 与这个 Host 绑定，正是它要用的那块）。
         self.send_response(302)
-        self.send_header("Location", location)
+        self.send_header("Location", f"http://{authority}/" if cookie else self.server.target_url(token))
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -73,12 +117,14 @@ class Relay:
 
     def __init__(self, host: str, port: int = RELAY_PORT, dsh_port: int = 3080,
                  token_provider: Callable[[], str | None] | None = None,
-                 server_factory=None):
+                 server_factory=None, mint=None):
         self.host = host
         self.port = int(port)
         self.dsh_port = int(dsh_port)
         self._token_provider = token_provider or (lambda: None)
         self._factory = server_factory or _Server
+        # 换 cookie 这一步可以注入：测试不该真去连本机 3080 上的 DSH。
+        self._mint = mint or (lambda authority, tok: mint_cookie(authority, tok, self.dsh_port))
         self._server = None
         self._thread = None
 
@@ -97,6 +143,9 @@ class Relay:
         httpd = self._factory((self.host, self.port), _Handler)
         httpd.token_provider = self._token_provider        # type: ignore[attr-defined]
         httpd.target_url = lambda tok: redirect_url(self.host, self.dsh_port, tok)  # type: ignore[attr-defined]
+        httpd.dsh_port = self.dsh_port                    # type: ignore[attr-defined]
+        httpd.default_authority = f"{self.host}:{self.dsh_port}"  # type: ignore[attr-defined]
+        httpd.mint = self._mint                          # type: ignore[attr-defined]
         self._server = httpd
         self._thread = threading.Thread(target=httpd.serve_forever, name="dsh-relay", daemon=True)
         self._thread.start()
