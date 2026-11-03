@@ -26,7 +26,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageGrab, ImageStat   # noqa: E40
 import dsh_gui                        # noqa: E402
 from dshconsole import status, ui_theme       # noqa: E402
 
-OUT = Path(os.environ.get("TEMP", ".")) / "ui_v4"
+OUT = Path(os.environ.get("DSH_SHOTS_DIR") or (Path(os.environ.get("TEMP", ".")) / "ui_v4"))
 # 固定主窗口左上角：Windows 会在这台机器上把窗口越挪越偏（曾经一路挪到屏幕外，
 # 抓到整张黑图）。每次抓图前把它钉回同一个位置，截图才可复现，也避开系统浮窗。
 ANCHOR = (160, 160)   # 留出 bbox_pad=120 的外扩余量，否则窗口贴边时外扩图被屏幕裁掉

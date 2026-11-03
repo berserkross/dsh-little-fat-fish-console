@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
 
 from . import status
@@ -57,6 +59,15 @@ WHITE_PANEL = "#FFFFFF"    # 二维码底板：必须纯白，扫码才稳
 
 FONT = "Microsoft YaHei UI"
 MONO = "Consolas"
+
+# 字阶倍率：调用点写的是设计稿上的字号，实际渲染前统一乘这个数。
+# 预设改一个 1.0→1.08 就能整体放大字阶去比观感，不用回来改十几处 size=。
+FONT_SCALE = 1.0
+
+
+def type_size(size: int) -> int:
+    """把设计稿字号换算成实际字号（预设放大/缩小时唯一经过的出口）。"""
+    return max(9, int(round(size * FONT_SCALE)))
 
 # ---------------- 玻璃渲染层 ----------------
 # 渲染图里叠在渐变上的东西，一律用 0~255 的 RGBA 元组；网格与星点压在 6% 以内，
@@ -112,6 +123,47 @@ LOG_ROWS_EMPTY = 12
 OVERLAY_QR = (440, 560)    # 二维码浮层尺寸
 OVERLAY_LOG = (980, 620)   # 全屏日志尺寸
 HERO_SIZE = 140            # 空态头像（日志为空时的 ico 圆形裁切大图）边长
+
+
+# ---------------- 外部预设覆盖（视觉迭代用） ----------------
+THEME_ENV = "DSH_CONSOLE_THEME"
+
+
+def apply_theme_override(path: str | None = None) -> list[str]:
+    """把一份 JSON 预设盖到本模块的令牌上，用来并行比较几套视觉方向。
+
+    没设环境变量也没传 path 时什么都不做 —— 仓库里这套蓝鲸主题就是默认。
+    只覆盖「已经存在的全大写令牌」，拼错的键、想改行为的小写名一律忽略，
+    所以预设文件写得再随意也不会把界面改出隐藏行为。JSON 没有 tuple，
+    这里按原值的形状还原（AURORA 这种二维元组也照原样收回）。
+    返回值是真正被覆盖的键，测试与截图脚本靠它断言预设确实生效。
+    """
+    target = path or os.environ.get(THEME_ENV, "")
+    if not target:
+        return []
+    try:
+        with open(target, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        # 预设坏了不该把界面拖下水：路径写错、JSON 手滑都退回仓库主题。
+        return []
+    if not isinstance(data, dict):
+        return []
+    applied: list[str] = []
+    for key, value in data.items():
+        if not (key.isupper() and key in globals()):
+            continue
+        current = globals()[key]
+        if isinstance(current, tuple) and isinstance(value, list):
+            value = tuple(
+                tuple(item) if isinstance(item, list) else item for item in value
+            )
+        globals()[key] = value
+        applied.append(key)
+    return applied
+
+
+apply_theme_override()
 
 
 def grid_columns(width: float) -> int:

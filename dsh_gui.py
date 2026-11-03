@@ -34,7 +34,8 @@ from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BADGE_SIZE, BG, BO
                                  LOG_TEXT, MONO, PAD, PANEL_DEEP, PHASE_STYLE, PHASE_WORD,
                                  PRIMARY, PRIMARY_GLOW, PRIMARY_HOVER, PRIMARY_RADIUS, RED,
                                  RED_DARK, SLATE, SLATE_DARK, TEXT, WINDOW_ALPHA, WINDOW_MIN,
-                                 WINDOW_SIZE, grid_columns, log_rows, log_rows_with_empty)
+                                 WINDOW_SIZE, grid_columns, log_rows, log_rows_with_empty,
+                                 type_size)
 
 CFG = config.resolve()          # 本机探测结果；缺项为 None，探测失败不抛异常
 HARNESS = CFG.harness
@@ -107,11 +108,11 @@ CHIP_EDGE = widgets.blend(PRIMARY_GLOW, CHIP, 0.5)
 
 
 def _font(size: int, bold: bool = False) -> ctk.CTkFont:
-    return ctk.CTkFont(family=FONT, size=size, weight="bold" if bold else "normal")
+    return ctk.CTkFont(family=FONT, size=type_size(size), weight="bold" if bold else "normal")
 
 
 def _mono(size: int) -> ctk.CTkFont:
-    return ctk.CTkFont(family=MONO, size=size)
+    return ctk.CTkFont(family=MONO, size=type_size(size))
 
 
 def _icon_candidates() -> list[Path]:

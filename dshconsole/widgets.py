@@ -568,13 +568,13 @@ def overlay_header(layer: _PopLayer, title: str, subtitle: str = "") -> ctk.CTkF
     left = ctk.CTkFrame(head, fg_color="transparent")
     left.pack(side="left", fill="x", expand=True)
     ctk.CTkLabel(left, text=title, anchor="w", text_color=ui_theme.TEXT,
-                 font=ctk.CTkFont(family=ui_theme.FONT, size=15, weight="bold")).pack(anchor="w")
+                 font=ctk.CTkFont(family=ui_theme.FONT, size=ui_theme.type_size(15), weight="bold")).pack(anchor="w")
     if subtitle:
         ctk.CTkLabel(left, text=subtitle, anchor="w", text_color=ui_theme.DIM,
-                     font=ctk.CTkFont(family=ui_theme.FONT, size=11)).pack(anchor="w")
+                     font=ctk.CTkFont(family=ui_theme.FONT, size=ui_theme.type_size(11))).pack(anchor="w")
     ctk.CTkButton(head, text="✕", width=30, height=28, corner_radius=8, cursor="hand2",
                   fg_color="transparent", hover_color=ui_theme.CARD2,
-                  text_color=ui_theme.DIM, font=ctk.CTkFont(family=ui_theme.FONT, size=13),
+                  text_color=ui_theme.DIM, font=ctk.CTkFont(family=ui_theme.FONT, size=ui_theme.type_size(13)),
                   command=layer.close).pack(side="right", padx=(8, 0))
     body = ctk.CTkFrame(layer.card, fg_color="transparent")
     body.pack(fill="both", expand=True, padx=16, pady=(0, 14))
@@ -594,8 +594,8 @@ class QrOverlay(_PopLayer):
             button_hover_color=ui_theme.SLATE_DARK, text_color=ui_theme.TEXT,
             dropdown_fg_color=ui_theme.CARD2, dropdown_hover_color=ui_theme.SLATE,
             dropdown_text_color=ui_theme.TEXT,
-            font=ctk.CTkFont(family=ui_theme.FONT, size=12),
-            dropdown_font=ctk.CTkFont(family=ui_theme.FONT, size=12))
+            font=ctk.CTkFont(family=ui_theme.FONT, size=ui_theme.type_size(12)),
+            dropdown_font=ctk.CTkFont(family=ui_theme.FONT, size=ui_theme.type_size(12)))
         self.picker.pack(fill="x")
         self.panel = ctk.CTkFrame(body, fg_color=ui_theme.WHITE_PANEL, corner_radius=12)
         self.panel.pack(fill="both", expand=True, pady=12)
@@ -603,7 +603,7 @@ class QrOverlay(_PopLayer):
                                         text_color=ui_theme.SLATE, width=252, height=252)
         self.image_label.pack(expand=True)
         self.hint = ctk.CTkLabel(body, text="", anchor="w", text_color=ui_theme.DIM,
-                                 font=ctk.CTkFont(family=ui_theme.MONO, size=11))
+                                 font=ctk.CTkFont(family=ui_theme.MONO, size=ui_theme.type_size(11)))
         self.hint.pack(fill="x")
         self.actions = ctk.CTkFrame(body, fg_color="transparent")
         self.actions.pack(fill="x", pady=(10, 0))
@@ -613,12 +613,12 @@ class QrOverlay(_PopLayer):
         ctk.CTkButton(self.actions, text="复制这个地址", height=34, corner_radius=8,
                       fg_color=ui_theme.SLATE, hover_color=ui_theme.SLATE_DARK,
                       text_color=ui_theme.TEXT,
-                      font=ctk.CTkFont(family=ui_theme.FONT, size=12),
+                      font=ctk.CTkFont(family=ui_theme.FONT, size=ui_theme.type_size(12)),
                       command=copy_command, cursor="hand2").pack(side="left", fill="x", expand=True)
         ctk.CTkButton(self.actions, text="关闭", height=34, corner_radius=8,
                       fg_color="transparent", border_width=1, border_color=ui_theme.BORDER,
                       hover_color=ui_theme.CARD2, text_color=ui_theme.DIM,
-                      font=ctk.CTkFont(family=ui_theme.FONT, size=12),
+                      font=ctk.CTkFont(family=ui_theme.FONT, size=ui_theme.type_size(12)),
                       command=self.close, cursor="hand2").pack(side="left", padx=(10, 0))
         if on_select is not None:
             self.picker.configure(command=on_select)
@@ -646,11 +646,11 @@ class LogOverlay(_PopLayer):
             body, fg_color=ui_theme.PANEL_DEEP, text_color=ui_theme.LOG_TEXT,
                       corner_radius=10,
             border_width=1, border_color=ui_theme.BORDER, wrap="word",
-            font=ctk.CTkFont(family=ui_theme.MONO, size=12), state="disabled")
+            font=ctk.CTkFont(family=ui_theme.MONO, size=ui_theme.type_size(12)), state="disabled")
         self.textbox.pack(fill="both", expand=True)
         ctk.CTkButton(body, text="收起（Esc）", height=32, corner_radius=8,
                       fg_color=ui_theme.SLATE, hover_color=ui_theme.SLATE_DARK,
-                      text_color=ui_theme.TEXT, font=ctk.CTkFont(family=ui_theme.FONT, size=12),
+                      text_color=ui_theme.TEXT, font=ctk.CTkFont(family=ui_theme.FONT, size=ui_theme.type_size(12)),
                       command=self.close, cursor="hand2").pack(anchor="e", pady=(10, 0))
         self.line_count = 0
 

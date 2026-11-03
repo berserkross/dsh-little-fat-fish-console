@@ -300,5 +300,63 @@ class PrimaryActionTests(unittest.TestCase):
             self.assertIn(self.gui.primary_action(phase)[2], allowed, phase)
 
 
+class ThemeOverrideTests(unittest.TestCase):
+    """外部预设：只盖令牌，不碰行为。
+
+    覆盖发生在模块导入期（dsh_gui 是 from ... import 逐名绑定），所以必须用子进程
+    验；进程内调 apply_theme_override 只证明函数能跑，证明不了真实启动路径。
+    """
+
+    def _child(self, preset: dict | None = None, preset_path: str | None = None) -> dict:
+        import json
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        env = dict(os.environ)
+        env.pop("DSH_CONSOLE_THEME", None)
+        with tempfile.TemporaryDirectory() as tmp:
+            if preset is not None:
+                path = Path(tmp) / "preset.json"
+                path.write_text(json.dumps(preset), encoding="utf-8")
+                env["DSH_CONSOLE_THEME"] = str(path)
+            if preset_path is not None:
+                env["DSH_CONSOLE_THEME"] = str(Path(tmp) / preset_path)
+            code = (
+                "import json;from dshconsole import ui_theme as t;"
+                "print(json.dumps({'BG': t.BG, 'PAD': t.PAD, 'AURORA': list(t.AURORA),"
+                " 'aurora_type': type(t.AURORA).__name__,"
+                " 'lamp': t.PHASE_STYLE[list(t.PHASE_STYLE)[0]].color}))"
+            )
+            done = subprocess.run([sys.executable, "-c", code], cwd=str(root),
+                                  env=env, capture_output=True, text=True, timeout=180)
+        self.assertEqual(done.returncode, 0, done.stderr[-800:])
+        return json.loads(done.stdout.strip().splitlines()[-1])
+
+    def test_no_preset_keeps_the_repository_theme(self):
+        self.assertEqual(self._child(None)["BG"], ui_theme.BG)
+
+    def test_preset_overrides_tokens_and_restores_tuples(self):
+        got = self._child({"BG": "#101010", "PAD": 20, "AURORA": [[1, 2, 3]]})
+        self.assertEqual(got["BG"], "#101010")
+        self.assertEqual(got["PAD"], 20)
+        # JSON 没有 tuple：还原后渲染层才拿得到跟原来一样的四元组
+        self.assertEqual(got["aurora_type"], "tuple")
+        self.assertEqual(got["AURORA"][0], [1, 2, 3])
+
+    def test_unknown_and_lowercase_keys_are_ignored(self):
+        got = self._child({"nope": 1, "phase": "x", "PAD": 20})
+        self.assertEqual(got["PAD"], 20)          # 已知令牌照盖
+        self.assertEqual(got["lamp"], ui_theme.PHASE_STYLE[PHASES[0]].color)  # 行为不动
+
+    def test_missing_preset_file_falls_back_to_the_repository_theme(self):
+        # 环境变量指向一个不存在的文件：界面照常起来，用仓库主题
+        self.assertEqual(self._child(preset_path="missing.json")["BG"], ui_theme.BG)
+
+
 if __name__ == "__main__":
     unittest.main()
+
