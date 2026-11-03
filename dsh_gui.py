@@ -158,6 +158,31 @@ def _ps_args(include_chrome: bool = False) -> list[str]:
     return args
 
 
+def build_direct_start_command(node, bin_js, harness, trusted, log_out, log_err,
+                                dsh_home: str = "") -> str:
+    """Start-Process 拉起 dsh web 的命令行；_start_direct 与测试共用这一份。
+
+    与 launch-dsh.ps1:88-90 等价，另补两处：把 DSH_HOME 交给子进程（脚本第 38 行做的那件事），
+    以及启动前清空两个日志 —— 不清就会读到上一次运行留下的过期 token。--trusted-host 由调用方
+    传进来，脚本那一版从来不传，重启出来的 DSH 认不得 tailnet 域名，手机访问直接 401。
+    """
+    argv = [str(bin_js), "web", "--no-open", "--port", str(PORT)] + list(trusted)
+    quoted = ", ".join("'" + str(item) + "'" for item in argv)
+    prefix = ""
+    if dsh_home:
+        prefix += f"$env:DSH_HOME='{dsh_home}'; "
+    for path in (log_out, log_err):
+        if path:
+            prefix += f"Set-Content -LiteralPath '{path}' -Value '' -ErrorAction SilentlyContinue; "
+    redirects = ""
+    if log_out:
+        redirects += f" -RedirectStandardOutput '{log_out}'"
+    if log_err:
+        redirects += f" -RedirectStandardError '{log_err}'"
+    return (prefix + f"Start-Process -FilePath '{node}' -ArgumentList @({quoted}) "
+            f"-WorkingDirectory '{harness}' -WindowStyle Hidden{redirects}")
+
+
 # ---------------- 探测与 ps 调用（统一走 psrun / probe，失败原因不再被吞） ----------------
 def run_ps(script: Path, *args: str, timeout: int = 60) -> psrun.PsResult:
     """跑随包发布的 ps1；成功与否看返回对象，不从输出里抠值。"""
@@ -1347,6 +1372,9 @@ class ConsoleApp(ctk.CTk):
                                            getattr(self, "_port_owner", None),
                                            self.logline)
         self._sync_adopt_button()
+        auto_relay = getattr(self, "_maybe_auto_relay", None)
+        if auto_relay is not None:      # 控件替身（tests/test_gui_hooks 的 FakeApp）没有这一手
+            auto_relay(state)
 
     def _sync_detail(self, state: "status.Status") -> None:
         """状态条中段：PID 与端口。数字走等宽字体，刷新时宽度不抖。"""
@@ -1710,16 +1738,42 @@ class ConsoleApp(ctk.CTk):
             self.log_async("已经在运行（端口在线），跳过启动，避免起来第二份 DSH。")
             return
         self.log_async("正在启动 DeepSeek Harness…")
-        args = _ps_args(include_chrome=True)
-        serve = self._serve_host_arg()
-        if serve:
-            args += ["-ServeHost", serve]
-        r = run_ps(LAUNCH_PS1, *args, timeout=90)
-        out = (r.stdout or "").strip()
-        if out:
-            self.log_async(out[-300:])
+        # 主路径不走 ps1：launch-dsh.ps1 上有参数绑定、提权、「端口在线就只开浏览器」几道门，
+        # 在控制台的非交互上下文里任何一道都会变成「点了没反应」。直接 Start-Process 拉起最短也最可控，
+        # 参数与日志文件仍与 ps1 约定一致，所以 token 照样可读、二维码照样可用。
+        if not self._start_direct():
+            self.log_async("直接启动没成功，回退到随包脚本…")
+            r = run_ps(LAUNCH_PS1, *_ps_args(include_chrome=True), timeout=90)
+            out = (r.stdout or "").strip()
+            if out:
+                self.log_async(out[-300:])
+            if not r.ok:
+                detail = ((r.why() or "") + " " + (r.stderr or "").strip()[-300:]).strip()
+                self.log_async(f"启动脚本返回失败：{detail or '没有更详细的输出'}")
+        if not self._wait_port(True, 20.0):
+            self.log_async("端口 20 秒内没起来：看上面的日志和 dsh-web.stderr.log。")
         self.log_async("启动完成。")
         self._verify_token_after_start()
+
+    def _start_direct(self) -> bool:
+        """用 PowerShell Start-Process 直接拉起 dsh web，绕开 ps1 的全部门槛。返回是否拉起。"""
+        node, bin_js, harness = CFG.node, CFG.bin_js, CFG.harness
+        if not (node and bin_js and harness):
+            self.log_async("直接启动失败：没探测到 node / bin.js / harness。")
+            return False
+        trusted = ["--trusted-host", f"127.0.0.1:{PORT}", "--trusted-host", f"localhost:{PORT}"]
+        serve = self._serve_host_arg()
+        if serve:
+            trusted += ["--trusted-host", serve]
+        command = build_direct_start_command(node, bin_js, harness, trusted,
+                                             TOKEN_LOG or "", CFG.stderr_log or "",
+                                             CFG.dsh_home or "")
+        result = psrun.run_ps_cmd(command, timeout=30)
+        if result.ok:
+            self.log_async("已直接拉起 DSH（绕开启动脚本，参数与日志路径一致）。")
+            return True
+        self.log_async(f"直接启动失败：{result.why() or result.text.strip()[:200]}")
+        return False
 
     def on_stop(self) -> None:
         """先查出将被结束的 PID 让用户确认，再动手；不确定就一个都不杀。"""
@@ -1810,6 +1864,30 @@ class ConsoleApp(ctk.CTk):
                 self.log_async(f"未知：{why}（继续等待）")
                 warned = True
         self.log_async("等待超时：请检查弹窗是否已确认提权。")
+    def _maybe_auto_relay(self, state: "status.Status") -> None:
+        """免 token 直连更常用，所以拿到 tailscale IP 就自动开一次（芯片仍可随时关）。
+
+        只自动开一次：用户手动关掉之后不再偷偷打开 —— 那会让人怀疑开关是假的。
+        """
+        if getattr(self, "_relay_auto_done", False):
+            return
+        if getattr(self, "_relay", None) is not None:
+            self._relay_auto_done = True
+            return
+        ip = getattr(state, "ts_ip", None)
+        if not ip:
+            return
+        self._relay_auto_done = True
+        relay = bridge.Relay(ip, dsh_port=PORT, token_provider=self._relay_token)
+        try:
+            relay.start()
+        except OSError as exc:
+            self.logline(f"免 token 直连没能自动开启：{exc}（端口 {bridge.RELAY_PORT} 被占）")
+            return
+        self._relay = relay
+        self.logline(f"免 token 直连已自动开启：手机打开 {relay.url}（仅 tailnet；点芯片可关）")
+        self.after(0, self._sync_relay_chip)
+
     def on_toggle_relay(self) -> None:
         """免 token 直连：在 tailnet IP 上开一个只做 302 的小门（默认关）。"""
         self._submit("免 token 直连", self._toggle_relay)
