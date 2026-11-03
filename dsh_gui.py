@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 import customtkinter as ctk
 from PIL import Image
 
-from dshconsole import (addresses, adopt, config, diagnostics, errors, logtail, phone,
+from dshconsole import (addresses, adopt, bridge, config, diagnostics, errors, logtail, phone,
                         probe, psrun, resources, single, snapshot, status, tailscale, tasks,
                         textutil, tray, ui_theme, widgets)
 from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BADGE_SIZE, BG, BORDER,
@@ -114,6 +114,7 @@ ACTION_GROUPS: tuple = (
         ("⧉", "复制手机访问地址", "on_copy"),
         ("⌂", "复制本机地址", "on_copy_local"),
         ("⇄", "开启手机访问（UAC）", "on_phone_on"),
+        ("⇥", "免 token 直连：关", "on_toggle_relay"),
         ("↺", "恢复本机模式（UAC）", "on_phone_off"),
     )),
     ("工具", (
@@ -583,6 +584,9 @@ class ConsoleApp(ctk.CTk):
         tray_icon, self._tray = self._tray, None
         if tray_icon is not None:
             tray_icon.stop()
+        relay, self._relay = getattr(self, "_relay", None), None
+        if relay is not None:
+            relay.stop()
         try:
             self.destroy()
         except Exception:      # noqa: BLE001 - 已经在销毁路径上
@@ -1806,6 +1810,50 @@ class ConsoleApp(ctk.CTk):
                 self.log_async(f"未知：{why}（继续等待）")
                 warned = True
         self.log_async("等待超时：请检查弹窗是否已确认提权。")
+    def on_toggle_relay(self) -> None:
+        """免 token 直连：在 tailnet IP 上开一个只做 302 的小门（默认关）。"""
+        self._submit("免 token 直连", self._toggle_relay)
+
+    def _toggle_relay(self) -> None:
+        relay = getattr(self, "_relay", None)
+        if relay is not None and relay.running:
+            relay.stop()
+            self._relay = None
+            self.log_async("已关闭免 token 直连（回到扫码/带 token 的地址）。")
+        else:
+            state = getattr(self, "_last_status", None)
+            ip = getattr(state, "ts_ip", None) if state is not None else None
+            if not ip:
+                self.log_async("没探测到 Tailscale IP：先点「刷新状态」，再开直连。")
+                return
+            relay = bridge.Relay(ip, dsh_port=PORT, token_provider=self._relay_token)
+            try:
+                relay.start()
+            except OSError as exc:
+                self.log_async(f"免 token 直连起不来：{exc}（端口 {bridge.RELAY_PORT} 被占？先关掉再试）")
+                return
+            self._relay = relay
+            self.log_async(f"免 token 直连已开启：手机打开 {relay.url} —— 只对 tailnet 成员开放，"
+                           "它会把请求转成一把带 token 的地址，之后 :3080 也能直接开。")
+        self.after(0, self._sync_relay_chip)
+
+    def _relay_token(self) -> "str | None":
+        """每次请求现取：DSH 重启换 token 后，直连自动跟上，不用重开开关。"""
+        url = token_url()
+        return token_suffix(url) if url else None
+
+    def _sync_relay_chip(self) -> None:
+        button = getattr(self, "_group_buttons", {}).get("on_toggle_relay")
+        if button is None:
+            return
+        relay = getattr(self, "_relay", None)
+        running = bool(relay is not None and relay.running)
+        try:
+            button.configure(text=("⇥  免 token 直连：开" if running else "⇥  免 token 直连：关"),
+                             border_color=(AMBER if running else BORDER))
+        except Exception:      # noqa: BLE001 - 控件替身/已销毁
+            pass
+
     def on_phone_off(self) -> None:
         if not messagebox.askyesno("恢复本机", "确定恢复本机模式并关闭手机访问吗？\n（会重启 DSH 服务，当前网页会断开）"):
             return

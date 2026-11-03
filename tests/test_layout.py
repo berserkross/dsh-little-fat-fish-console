@@ -77,8 +77,8 @@ class ActionGroupsTests(unittest.TestCase):
         self.assertEqual(got, {"start", "stop"})
 
     def test_group_count_matches_the_spec(self):
-        """14 项：启停合并到主按钮后少两颗，服务组再加回一颗「关闭 DSH」。"""
-        self.assertEqual(len(_entries()), 14)
+        """15 项：启停合并到主按钮后少两颗；服务组加回「关闭 DSH」，手机访问组加「免 token 直连」。"""
+        self.assertEqual(len(_entries()), 15)
 
 
 class LayoutBudgetTests(unittest.TestCase):
