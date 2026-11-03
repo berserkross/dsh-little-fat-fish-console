@@ -587,8 +587,21 @@ class ConsoleApp(ctk.CTk):
         只有日志区有权拉伸（它的那一行 weight=1），窗口变高是日志变高，
         功能网格和主操作永远不会被挤掉。
         """
+        # 整窗纵向滚动：所有区块挂在 self._page 上，窗口矮到放不下（最小 620x560）时
+        # 由 CTkScrollableFrame 出滚动条，而不是把底栏裁到窗口外。
+        self._page = ctk.CTkScrollableFrame(
+            self, fg_color=BG, corner_radius=0,
+            scrollbar_button_color=CARD3, scrollbar_button_hover_color=SLATE)
+        self._page.place(x=0, y=0, relwidth=1, relheight=1)
+        try:
+            self._page._scrollbar.configure(width=10)
+            # 内部画布尺寸一变就把内容高度钉成 max(视口, 内容最小高)：
+            # 放得下时内容跟着窗口缩（不出现滚动条），放不下时才滚。
+            self._page._parent_canvas.bind("<Configure>", self._on_page_resize, add="+")
+        except Exception:      # noqa: BLE001 - CTk 内部结构变了
+            pass
         for index in range(GRID_SUBCOLS):
-            self.grid_columnconfigure(index, weight=1, uniform="col")
+            self._page.grid_columnconfigure(index, weight=1, uniform="col")
         self._columns = 0
         self._groups: list = []
         self._group_buttons: dict = {}
@@ -598,7 +611,7 @@ class ConsoleApp(ctk.CTk):
         self._badge_photo = None
         self._log_empty = True
         # 玻璃背景板先建，之后建的控件自然叠在它上面（Tk 的叠放顺序 = 创建顺序）。
-        self._backdrop = widgets.GlassBackdrop(self)
+        self._backdrop = widgets.GlassBackdrop(self._page)
         self._backdrop.place(x=0, y=0, relwidth=1, relheight=1)
         self._build_header()
         self._build_primary()
@@ -624,7 +637,7 @@ class ConsoleApp(ctk.CTk):
 
     def _build_header(self) -> None:
         """头部：鲸鱼娘圆形玻璃徽章 + 标题 + 状态（灯/状态词/PID·端口），右端手机访问模式。"""
-        header = ctk.CTkFrame(self, fg_color=CARD, corner_radius=CARD_RADIUS, height=HEADER_H)
+        header = ctk.CTkFrame(self._page, fg_color=CARD, corner_radius=CARD_RADIUS, height=HEADER_H)
         header.grid(row=0, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
                     padx=PAD, pady=(PAD, 0))
         header.grid_propagate(False)
@@ -663,7 +676,7 @@ class ConsoleApp(ctk.CTk):
         启动/停止只留这一颗 —— 功能网格里的同名按钮已经删掉，同一个动作不再有两个入口。
         """
         self.btn_primary = ctk.CTkButton(
-            self, text="启动 DSH", command=self._run_primary, height=ACTION_H,
+            self._page, text="启动 DSH", command=self._run_primary, height=ACTION_H,
             corner_radius=PRIMARY_RADIUS, font=_font(15, True), fg_color=PRIMARY,
             hover_color=PRIMARY_HOVER, text_color="#FFFFFF", border_width=2,
             border_color=PRIMARY, cursor="hand2")
@@ -690,7 +703,7 @@ class ConsoleApp(ctk.CTk):
 
     def _build_adopt(self) -> None:
         """条件槽：异常时冒出「改为控制运行中的实例」，正常时整行收成 0 高。"""
-        self._slot = ctk.CTkFrame(self, fg_color=CARD, height=0)
+        self._slot = ctk.CTkFrame(self._page, fg_color=CARD, height=0)
         self._slot.grid(row=2, column=0, columnspan=GRID_SUBCOLS, sticky="ew",
                         padx=PAD, pady=(6, 0))
         self._slot.grid_propagate(False)
@@ -709,7 +722,7 @@ class ConsoleApp(ctk.CTk):
         于是每张卡的宽度都等于「列宽 - GAP」，卡间距是 GAP，最外侧仍是 PAD —— 三组卡
         等宽是构造出来的，不是碰巧对上的。
         """
-        holder = ctk.CTkFrame(self, fg_color=BG)
+        holder = ctk.CTkFrame(self._page, fg_color=BG)
         self._grid_holder = holder
         for index in range(GRID_SUBCOLS):
             holder.grid_columnconfigure(index, weight=1, uniform="grp")
@@ -767,7 +780,7 @@ class ConsoleApp(ctk.CTk):
         剩余高度归三组卡那一行（root 第 3 行 weight=1）。日志卡自身只占「抬头 + 正文」，
         所以「4 行日志 + 40% 空区」这种场面不会再有：行数少，这一块就矮。
         """
-        card = ctk.CTkFrame(self, fg_color=CARD, corner_radius=CARD_RADIUS)
+        card = ctk.CTkFrame(self._page, fg_color=CARD, corner_radius=CARD_RADIUS)
         self._log_card = card
         self._panels["log"] = card
         card.grid_columnconfigure(0, weight=1)
@@ -837,7 +850,7 @@ class ConsoleApp(ctk.CTk):
 
     def _build_foot(self) -> None:
         """底栏：本机入口 + 关闭按钮当前行为。做成一条玻璃条，不再是两截悬空的字。"""
-        foot = ctk.CTkFrame(self, fg_color=CARD, corner_radius=CARD_RADIUS)
+        foot = ctk.CTkFrame(self._page, fg_color=CARD, corner_radius=CARD_RADIUS)
         self._foot = foot
         self._panels["foot"] = foot
         ctk.CTkLabel(foot, text="本机", font=_font(11), text_color=FAINT).pack(
@@ -895,7 +908,7 @@ class ConsoleApp(ctk.CTk):
                         padx=PAD, pady=(GAP, PAD))
         # 剩余高度只给组卡那一行（第 3 行）；日志行与底栏都按内容高
         for row_index in range(log_row + 2):
-            self.grid_rowconfigure(row_index, weight=1 if row_index == 3 else 0)
+            self._page.grid_rowconfigure(row_index, weight=1 if row_index == 3 else 0)
 
     def _layout_group_cards(self) -> None:
         """把三张组卡按当前列数铺进容器：等宽列 + sticky="nsew" 交给 grid 拉伸。
@@ -940,7 +953,8 @@ class ConsoleApp(ctk.CTk):
         """按当前真实几何重画整窗底图，并把每块面板的采样色回填给控件。"""
         self._glass_job = None
         try:
-            width, height = self.winfo_width(), self.winfo_height()
+            page = getattr(self, "_page", None) or self
+            width, height = page.winfo_width(), page.winfo_height()
             if width < 120 or height < 120:
                 return
             scale = self._get_window_scaling() or 1.0
@@ -984,6 +998,42 @@ class ConsoleApp(ctk.CTk):
         except Exception:      # noqa: BLE001
             pass
 
+    def _min_page_height(self) -> int:
+        """内容再压也压不下的最小高度（设备像素），低于它就出滚动条。
+
+        按每个区块的真实请求高度求和，不再猜常量：芯片实际高度远大于
+        GRID_BTN_H，用常量估会给出偏小的结论，导致最小窗口里卡片被压扁、
+        滚动条又不出。日志卡按 LOG_ROWS_MIN 行的定值算，避免行数回写
+        请求高度造成尺寸自激。
+        """
+        scale = self._get_window_scaling() or 1.0
+        blocks = [self._panels.get("header"), self.btn_primary, self._slot,
+                  self._grid_holder, self._panels.get("foot")]
+        total = int((PAD * 2 + GAP * 5) * scale)
+        total += int((LOG_ROWS_MIN * LOG_LINE_PX + 56) * scale)
+        for block in blocks:
+            if block is None:
+                continue
+            try:
+                total += max(1, block.winfo_reqheight())
+            except Exception:      # noqa: BLE001 - 已销毁
+                continue
+        return total
+
+    def _on_page_resize(self, event) -> None:
+        """把滚动宿主的内容高度钉在 max(视口高, 内容最小高)。"""
+        try:
+            need = self._min_page_height()
+            height = max(int(event.height), need)
+            self._page._parent_canvas.itemconfigure(self._page._create_window_id, height=height)
+            # 放得下就把滚动条收起来（CTk 默认常显），放不下才露出来
+            if height > int(event.height):
+                self._page._scrollbar.grid()
+            else:
+                self._page._scrollbar.grid_remove()
+        except Exception:      # noqa: BLE001 - 控件替身 / CTk 内部结构变了
+            return
+
     def _log_room(self) -> float:
         """日志正文最多能占多少逻辑像素。
 
@@ -999,11 +1049,11 @@ class ConsoleApp(ctk.CTk):
             return 10 ** 6
         if win_h <= 120:
             return 10 ** 6
-        grid_rows = max(1, max((len(entries) + 1) // 2 for _title, entries in ACTION_GROUPS))
-        card_h = 30 + grid_rows * (GRID_BTN_H + GRID_PAD)      # 标题行 + N 行按钮
-        foot_h = 40
-        stack = (PAD + HEADER_H + GAP + ACTION_H + GAP + card_h + GAP + foot_h + PAD)
-        return win_h / scale - stack - 56                      # 56 = 抬头行 + 上下内边距
+        # 其它区块的占位一律取实测请求高度：用 GRID_BTN_H 这类常量估算会比芯片真实
+        # 高度小一半，日志就会以为自己还有余量、擅自长到 10 行，把组卡压成一条缝。
+        log_min = int((LOG_ROWS_MIN * LOG_LINE_PX + 56) * scale)
+        fixed = self._min_page_height() - log_min
+        return (win_h - fixed) / scale - 56                    # 56 = 抬头行 + 上下内边距
 
     def _log_line_count(self) -> int | None:
         """控件里真实的文本行数（Text 的 index("end-1c") 行号）；控件替身返回 None。"""
