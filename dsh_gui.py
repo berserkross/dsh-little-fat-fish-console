@@ -158,22 +158,37 @@ def _ps_args(include_chrome: bool = False) -> list[str]:
     return args
 
 
+def truncate_logs(*paths) -> list[str]:
+    """启动前清空日志，返回没能清空的那些。
+
+    为什么放在 Python 里而不是塞进 PowerShell 的 Set-Content：被别的进程占着的日志会让
+    Set-Content 静默失败（-ErrorAction SilentlyContinue），旧 token 就留在文件里，扫码必然 401。
+    这里失败要能被看见，好让调用方明确告诉用户「token 不可信」。
+    """
+    failed: list[str] = []
+    for path in paths:
+        if not path:
+            continue
+        try:
+            Path(path).write_bytes(b"")
+        except OSError:
+            failed.append(str(path))
+    return failed
+
+
 def build_direct_start_command(node, bin_js, harness, trusted, log_out, log_err,
                                 dsh_home: str = "") -> str:
     """Start-Process 拉起 dsh web 的命令行；_start_direct 与测试共用这一份。
 
-    与 launch-dsh.ps1:88-90 等价，另补两处：把 DSH_HOME 交给子进程（脚本第 38 行做的那件事），
-    以及启动前清空两个日志 —— 不清就会读到上一次运行留下的过期 token。--trusted-host 由调用方
-    传进来，脚本那一版从来不传，重启出来的 DSH 认不得 tailnet 域名，手机访问直接 401。
+    与 launch-dsh.ps1:88-90 等价，另补一处：把 DSH_HOME 交给子进程（脚本第 38 行做的那件事）。
+    --trusted-host 由调用方传进来，脚本那一版从来不传，重启出来的 DSH 认不得 tailnet 域名，
+    手机访问直接 401。日志清空不在命令行里做 —— 那一步必须能失败上报，见 truncate_logs()。
     """
     argv = [str(bin_js), "web", "--no-open", "--port", str(PORT)] + list(trusted)
     quoted = ", ".join("'" + str(item) + "'" for item in argv)
     prefix = ""
     if dsh_home:
         prefix += f"$env:DSH_HOME='{dsh_home}'; "
-    for path in (log_out, log_err):
-        if path:
-            prefix += f"Set-Content -LiteralPath '{path}' -Value '' -ErrorAction SilentlyContinue; "
     redirects = ""
     if log_out:
         redirects += f" -RedirectStandardOutput '{log_out}'"
@@ -1715,8 +1730,32 @@ class ConsoleApp(ctk.CTk):
             return ""
         return addresses.host_port(name, addresses.SCHEME_PORTS[addresses.SCHEME_HTTP])
 
+    def _port_owner_text(self) -> str:
+        """谁在听这个端口：给日志一行，查不到就说查不到（不猜）。"""
+        owner = getattr(self, "_port_owner", None)
+        if owner is None:
+            return "占用者未知"
+        try:
+            candidate, why = owner(PORT)
+        except Exception as exc:        # noqa: BLE001 - 探测失败只影响文案
+            return f"占用者查不到（{exc}）"
+        return candidate.label if candidate is not None else f"占用者查不到（{why or '没有匹配的进程'}）"
+
+    def _token_is_fresh(self) -> bool:
+        """日志是不是本次启动写的：不是就说明这把 token 属于别的实例，扫码只会 401。"""
+        floor = getattr(self, "_start_epoch", 0.0)
+        if not floor or TOKEN_LOG is None:
+            return True
+        try:
+            return TOKEN_LOG.stat().st_mtime >= floor - 2.0
+        except OSError:
+            return False
+
     def _verify_token_after_start(self) -> None:
         """启动后立刻用日志里的 token 去问一次服务：认不认，当场说清。"""
+        if not self._token_is_fresh():
+            self.log_async("启动日志没有被这次启动刷新（多半被别的进程占着）：token 不可信，先别扫码。")
+            return
         url = token_url()
         if not url:
             self.log_async("手机访问：启动日志里没有 token，二维码此时不可信（先点刷新状态）。")
@@ -1725,8 +1764,8 @@ class ConsoleApp(ctk.CTk):
         if state is True:
             self.log_async("手机访问：token 已验证通过（当前实例就是这次启动的）。")
         elif state is False:
-            self.log_async("手机访问：token 被当前实例拒绝（401）——端口上跑的可能是"
-                           "另一个 DSH，先「关闭 DSH」再启动一次。")
+            self.log_async(f"手机访问：token 被当前实例拒绝（401）——{PORT} 上答话的不是"
+                           f"这次启动的进程（{self._port_owner_text()}），先「关闭 DSH」再启动一次。")
         else:
             self.log_async("手机访问：token 暂时验证不了（端口没应答），状态刷新后再说。")
 
@@ -1735,7 +1774,8 @@ class ConsoleApp(ctk.CTk):
         # 所以这里加一道守卫：端口已经在线就不再加拉一份 DSH。
         # force=True 只给重启用：重启已经自己确认过端口关掉了，守卫在这儿会把它挡死。
         if not force and self._port_open():
-            self.log_async("已经在运行（端口在线），跳过启动，避免起来第二份 DSH。")
+            self.log_async(f"{PORT} 已在监听：{self._port_owner_text()}。"
+                           "不再起第二份 —— 起了也只会撞出 EADDRINUSE。要换成控制台这份，先点「关闭 DSH」。")
             return
         self.log_async("正在启动 DeepSeek Harness…")
         # 主路径不走 ps1：launch-dsh.ps1 上有参数绑定、提权、「端口在线就只开浏览器」几道门，
@@ -1761,6 +1801,12 @@ class ConsoleApp(ctk.CTk):
         if not (node and bin_js and harness):
             self.log_async("直接启动失败：没探测到 node / bin.js / harness。")
             return False
+        # 清日志要早于启动，且必须知道清没清掉：清不掉就是「文件里躺着上一次的 token」。
+        self._start_epoch = time.time()
+        stale = truncate_logs(TOKEN_LOG, CFG.stderr_log)
+        if stale:
+            self.log_async("这些日志没能清空（被别的进程占着）：" + "、".join(stale) +
+                           " —— 里面的 token 可能是上一次的，扫码前先看一眼日志时间。")
         trusted = ["--trusted-host", f"127.0.0.1:{PORT}", "--trusted-host", f"localhost:{PORT}"]
         serve = self._serve_host_arg()
         if serve:
@@ -1916,7 +1962,12 @@ class ConsoleApp(ctk.CTk):
         self.after(0, self._sync_relay_chip)
 
     def _relay_token(self) -> "str | None":
-        """每次请求现取：DSH 重启换 token 后，直连自动跟上，不用重开开关。"""
+        """每次请求现取：DSH 重启换 token 后，直连自动跟上，不用重开开关。
+
+        不新鲜就别给：宁可让手机看到「去点重启」那一页，也不要把一把失效的 token 跳过去。
+        """
+        if not self._token_is_fresh():
+            return None
         url = token_url()
         return token_suffix(url) if url else None
 

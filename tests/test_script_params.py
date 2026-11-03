@@ -5,6 +5,8 @@
 GUI 传什么，脚本就必须声明什么。
 """
 import re
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -43,10 +45,34 @@ class ScriptParamTests(unittest.TestCase):
         for piece in ("Start-Process", "'web'", "'--no-open'", "'--port', '3080'",
                       "--trusted-host", "valkiriya.tail679d87.ts.net",
                       "dsh-web.stdout.log", "dsh-web.stderr.log", "-WindowStyle Hidden",
-                      "$env:DSH_HOME='C:/h/.dsh'", "Set-Content -LiteralPath 'C:/logs/dsh-web.stdout.log'"):
+                      "$env:DSH_HOME='C:/h/.dsh'"):
             self.assertIn(piece, cmd)
-        self.assertLess(cmd.index("Set-Content"), cmd.index("Start-Process"),
-                        "日志必须先清空再启动，否则读到的是上一次的过期 token")
+        # 清日志留在 Python 侧做：塞进 Set-Content 会静默失败，旧 token 留在文件里就必然 401。
+        self.assertNotIn("Set-Content", cmd)
+
+    def test_truncate_logs_reports_what_it_could_not_clear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp, "a.log")
+            good.write_text("dsh web: http://127.0.0.1:3080/?token=OLD", encoding="utf-8")
+            bad = Path(tmp, "missing", "b.log")      # 父目录不存在 → 必然清不掉
+            failed = dsh_gui.truncate_logs(str(good), str(bad), "")
+            self.assertEqual(good.read_text(encoding="utf-8"), "")
+            self.assertEqual(failed, [str(bad)])
+
+    def test_token_is_fresh_compares_log_mtime_with_start_epoch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp, "dsh-web.stdout.log")
+            log.write_text("x", encoding="utf-8")
+            app = object.__new__(dsh_gui.ConsoleApp)
+            saved = dsh_gui.TOKEN_LOG
+            dsh_gui.TOKEN_LOG = log
+            try:
+                app._start_epoch = time.time() - 60      # 日志比这次启动新
+                self.assertTrue(app._token_is_fresh())
+                app._start_epoch = time.time() + 60      # 日志比这次启动旧
+                self.assertFalse(app._token_is_fresh())
+            finally:
+                dsh_gui.TOKEN_LOG = saved
 
     def test_bundled_scripts_exist(self):
         for path in (resources.launch_ps1(), resources.switch_ps1()):
