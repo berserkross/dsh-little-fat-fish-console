@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import socket
 import unittest
+import urllib.error
 
 from dshconsole import probe
 from dshconsole.psrun import PsResult
@@ -226,6 +227,37 @@ class PortOpenTests(unittest.TestCase):
         finally:
             server.close()
         self.assertFalse(probe.port_open(port, timeout=0.2))
+
+
+class TokenAcceptedTests(unittest.TestCase):
+    """token 校验：手机访问坏过一次（日志里的旧 token），这条探测必须说清三种结果。"""
+
+    class _Ok:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def test_accepted_token_is_true(self):
+        self.assertTrue(probe.token_accepted(3080, "tok", opener=lambda *a, **k: self._Ok()))
+
+    def test_401_is_false(self):
+        def opener(*_a, **_k):
+            raise urllib.error.HTTPError("http://x/", 401, "no", {}, None)
+        self.assertFalse(probe.token_accepted(3080, "tok", opener=opener))
+
+    def test_unreachable_is_unknown(self):
+        def opener(*_a, **_k):
+            raise urllib.error.URLError("down")
+        self.assertIsNone(probe.token_accepted(3080, "tok", opener=opener))
+
+    def test_empty_token_is_refused_without_a_request(self):
+        called = []
+        self.assertFalse(probe.token_accepted(3080, "", opener=lambda *a, **k: called.append(1)))
+        self.assertEqual(called, [])
 
 
 if __name__ == "__main__":

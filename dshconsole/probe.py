@@ -11,6 +11,8 @@ import json
 import re
 import socket
 import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +48,30 @@ def port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.4) -> bool:
 
 
 # ---------------- 端口转发（netsh portproxy） ----------------
+TOKEN_PROBE_TIMEOUT = 2.0
+
+
+def token_accepted(port: int, token: str, host: str = "127.0.0.1",
+                   timeout: float = TOKEN_PROBE_TIMEOUT, opener=None) -> bool | None:
+    """拿 token 去问一次正在运行的 DSH：True=认，False=不认（401），None=问不到。
+
+    为什么必须问：控制台手里的 token 是从启动日志里抠出来的，只有「本控制台启动的
+    那一次」会写这行。DSH 被别处（桌面版、别的终端、别的控制台）重启过之后，日志里
+    的 token 就成了旧钥匙 —— 手机扫码只会得到 401，而界面上看不出任何异常。
+    """
+    if not token:
+        return False
+    url = f"http://{host}:{int(port)}/?token={token}"
+    open_url = opener or urllib.request.urlopen
+    try:
+        with open_url(url, timeout=timeout) as response:
+            return 200 <= int(getattr(response, "status", 200) or 200) < 400
+    except urllib.error.HTTPError as exc:
+        return False if int(getattr(exc, "code", 0) or 0) == 401 else None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
 def parse_portproxy_table(text: str) -> list[tuple[str, int, str, int]]:
     """解析 `netsh interface portproxy show v4tov4` 的表格。
 

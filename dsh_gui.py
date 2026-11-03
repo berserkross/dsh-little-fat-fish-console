@@ -1527,13 +1527,22 @@ class ConsoleApp(ctk.CTk):
         if self._qr_overlay is not None:
             self._qr_overlay.show()
             return
-        if not self._current_token():
+        token = self._current_token()
+        if not token:
             messagebox.showinfo("提示", "还没有可用的 token：请先启动 Harness。")
             return
+        # 手里的 token 可能是过期的（DSH 被别处重启过）：先问一句服务，如实写进日志。
+        # 这里不弹模态框 —— 自检会走这条路径，模态框会把 --selftest 挂死。
+        stale = probe.token_accepted(PORT, token_suffix(token)) is False
+        if stale:
+            self.log_async("手机访问：token 被当前实例拒绝（401）——扫码只会看到认证失败。"
+                           "多半是现在的 DSH 不是本控制台启动的；点「重启 DSH」可重签一把。")
         overlay = widgets.QrOverlay(self, on_close=self._on_qr_overlay_closed)
         self._qr_overlay = overlay
         try:
-            overlay.hint.configure(text="正在探测手机可达地址…")
+            overlay.hint.configure(text="token 可能已过期（当前实例不认这把钥匙），"
+                                        "扫码会失败；点「重启 DSH」重签。"
+                                   if stale else "正在探测手机可达地址…")
         except Exception:      # noqa: BLE001 - 浮层刚建就被关
             pass
         self._fill_qr_addresses()
@@ -1656,6 +1665,39 @@ class ConsoleApp(ctk.CTk):
     def on_start(self) -> None:
         self._submit("启动 DeepSeek Harness", self._start)
 
+    def _serve_host_arg(self) -> str:
+        """当前 tailnet 的 MagicDNS 域名:80；查不到就空串（不猜地址）。
+
+        为什么要它：tailscale serve 把请求转给 127.0.0.1，但 Host 头仍是域名。
+        DSH 只放行 --trusted-host 里的 host，域名不在名单里就会 401/拒绝 ——
+        以前只有「开启手机访问」那条路会传 -ServeHost，用户直接点「启动 DSH」
+        时域名永远进不了名单，于是域名二维码怎么扫都不通。
+        """
+        try:
+            detection = tailscale.detect()
+        except Exception:      # noqa: BLE001 - 探测失败不该拦住启动
+            return ""
+        facts = getattr(detection, "facts", None)
+        name = (getattr(facts, "dns_name", "") or "").strip()
+        if not name:
+            return ""
+        return addresses.host_port(name, addresses.SCHEME_PORTS[addresses.SCHEME_HTTP])
+
+    def _verify_token_after_start(self) -> None:
+        """启动后立刻用日志里的 token 去问一次服务：认不认，当场说清。"""
+        url = token_url()
+        if not url:
+            self.log_async("手机访问：启动日志里没有 token，二维码此时不可信（先点刷新状态）。")
+            return
+        state = probe.token_accepted(PORT, token_suffix(url))
+        if state is True:
+            self.log_async("手机访问：token 已验证通过（当前实例就是这次启动的）。")
+        elif state is False:
+            self.log_async("手机访问：token 被当前实例拒绝（401）——端口上跑的可能是"
+                           "另一个 DSH，先「关闭 DSH」再启动一次。")
+        else:
+            self.log_async("手机访问：token 暂时验证不了（端口没应答），状态刷新后再说。")
+
     def _start(self, force: bool = False) -> None:
         # 「启动 DSH」现在是常驻可点的一颗按钮（不再只能从主按钮进去），
         # 所以这里加一道守卫：端口已经在线就不再加拉一份 DSH。
@@ -1664,11 +1706,16 @@ class ConsoleApp(ctk.CTk):
             self.log_async("已经在运行（端口在线），跳过启动，避免起来第二份 DSH。")
             return
         self.log_async("正在启动 DeepSeek Harness…")
-        r = run_ps(LAUNCH_PS1, *_ps_args(include_chrome=True), timeout=90)
+        args = _ps_args(include_chrome=True)
+        serve = self._serve_host_arg()
+        if serve:
+            args += ["-ServeHost", serve]
+        r = run_ps(LAUNCH_PS1, *args, timeout=90)
         out = (r.stdout or "").strip()
         if out:
             self.log_async(out[-300:])
         self.log_async("启动完成。")
+        self._verify_token_after_start()
 
     def on_stop(self) -> None:
         """先查出将被结束的 PID 让用户确认，再动手；不确定就一个都不杀。"""
