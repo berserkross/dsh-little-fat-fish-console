@@ -1923,13 +1923,21 @@ class ConsoleApp(ctk.CTk):
         ip = getattr(state, "ts_ip", None)
         if not ip:
             return
-        self._relay_auto_done = True
+        # 上一次运行留下的监听可能还没退干净（换 exe 重启时就是这样），一次失败不该
+        # 让这条开关整场都打不开：给三轮回旋余地，真的还是占着才放弃。
+        tries = getattr(self, "_relay_auto_tries", 0) + 1
+        self._relay_auto_tries = tries
         relay = bridge.Relay(ip, dsh_port=PORT, token_provider=self._relay_token)
         try:
             relay.start()
         except OSError as exc:
+            if tries < 3:
+                self.logline(f"免 token 直连暂时开不起来：{exc}（{bridge.RELAY_PORT} 被占，稍后自动重试）")
+                return
+            self._relay_auto_done = True
             self.logline(f"免 token 直连没能自动开启：{exc}（端口 {bridge.RELAY_PORT} 被占）")
             return
+        self._relay_auto_done = True
         self._relay = relay
         self.logline(f"免 token 直连已自动开启：手机打开 {relay.url}（仅 tailnet；点芯片可关）")
         self.after(0, self._sync_relay_chip)
