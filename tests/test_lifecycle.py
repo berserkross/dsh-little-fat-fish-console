@@ -39,6 +39,9 @@ class FakeApp:
     def refresh(self, force=False):
         pass
 
+    def _cleanup_residue(self):
+        dsh_gui.ConsoleApp._cleanup_residue(self)
+
     def _port_owner_text(self):
         return "占用者未知"
 

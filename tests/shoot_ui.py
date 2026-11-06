@@ -49,6 +49,12 @@ def _degraded():
                          others=[(41544, r"C:\fake\node_modules\@deepseek-ai\dsh\lib\bin.js")])
 
 
+def _residue():
+    return status.Status(phase=status.Phase.STOPPED, pids=[], port_open=False,
+                         phone_open=False, ts_ip=None, lan_ips=None, notes=[],
+                         residue=True)
+
+
 def settle(app, seconds: float = 0.55) -> None:
     """把挂起的事件跑完：玻璃底图是 140ms 防抖之后才画的。"""
     end = time.time() + seconds
@@ -240,6 +246,14 @@ def main() -> int:
     settle(app)
     clear_selection(app)
     grab(app, "03-degraded.png")
+
+    # 03b 端口转发残留（琥珀色芯片：假活可见、点此清理）
+    app._apply_status(_residue())
+    app._append_log(["端口转发残留：转发规则还在，但本机 DSH 进程不在",
+                     "点状态条上的琥珀色芯片即可清理"])
+    settle(app)
+    clear_selection(app)
+    grab(app, "03b-residue.png")
 
     # 04 900x900 窄窗（2 列组卡 + 第三组通栏）
     app.geometry("900x900")

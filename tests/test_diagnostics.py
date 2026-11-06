@@ -150,5 +150,29 @@ class ExportTests(unittest.TestCase):
         json.loads(entries["meta.json"])
 
 
+class StartupFailuresTests(unittest.TestCase):
+    def test_summarizes_recent_startup_failures(self):
+        root = Path(tempfile.mkdtemp(prefix="dsh-diag-"))
+        cfg = fake_cfg(root)
+        logs = root / "logs"
+        logs.mkdir()
+        for i in range(25):
+            (logs / f"startup-2026-11-0{i % 10}T00-00-00.000Z-uuid-{i}.log").write_text(
+                "WARNING: Raw diagnostics may contain configuration values.\n"
+                "  error: StartupError: dsh: startup failed: 2 required plugins\n"
+                "      Error: listen EADDRINUSE: address already in use 127.0.0.1:3080\n",
+                encoding="utf-8")
+        text = diagnostics.startup_failures(cfg)
+        self.assertEqual(text.count("startup-"), 20)
+        self.assertIn("EADDRINUSE", text)
+
+    def test_startup_failures_describes_missing_home(self):
+        root = Path(tempfile.mkdtemp(prefix="dsh-diag-"))
+        cfg = fake_cfg(root)
+        cfg.dsh_home = None
+        text = diagnostics.startup_failures(cfg)
+        self.assertIn("DSH_HOME", text)
+
+
 if __name__ == "__main__":
     unittest.main()

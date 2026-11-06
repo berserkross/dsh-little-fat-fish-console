@@ -735,6 +735,10 @@ class ConsoleApp(ctk.CTk):
         self.lbl_detail = ctk.CTkLabel(line, text="PID — · 端口 —", font=_mono(11),
                                        text_color=DIM, anchor="w")
         self.lbl_detail.pack(side="left", padx=(12, 0))
+        # 端口转发残留芯片：只在残留态 pack 进来（见 _apply_status），平时不占位置。
+        self.lbl_residue = ctk.CTkLabel(line, text="", font=_font(11, True),
+                                        text_color=AMBER, anchor="w", cursor="hand2")
+        self.lbl_residue.bind("<Button-1>", lambda _event: self._on_residue_click())
         self.lbl_phone = ctk.CTkLabel(header, text="手机访问：—", font=_font(12),
                                       text_color=FAINT, anchor="e")
         self.lbl_phone.grid(row=0, column=3, rowspan=2, sticky="e", padx=(10, 14))
@@ -1378,6 +1382,19 @@ class ConsoleApp(ctk.CTk):
         else:
             phone_text, phone_color = "手机访问：本机模式", DIM
         self.lbl_phone.configure(text=phone_text, text_color=phone_color)
+        residue_lbl = getattr(self, "lbl_residue", None)
+        if residue_lbl is not None:
+            if state.residue:
+                residue_lbl.configure(text="端口转发残留 · 点此清理", text_color=AMBER,
+                                      cursor="hand2")
+                if not getattr(self, "_residue_shown", False):
+                    residue_lbl.pack(side="left", padx=(12, 0))
+                    self._residue_shown = True
+            else:
+                residue_lbl.configure(text="", cursor="")
+                if getattr(self, "_residue_shown", False):
+                    residue_lbl.pack_forget()
+                    self._residue_shown = False
         self._token = token if token is not None else token_url()
         if state.notes:
             stamp = time.strftime("[%H:%M:%S] ")
@@ -1881,19 +1898,29 @@ class ConsoleApp(ctk.CTk):
                 self.log_async(f"警告：{PORT} 仍在监听，未完全停止（剩余 PID：{shown}）。")
             # 端口还在监听但已无 DSH 进程：通常是手机访问的端口转发残留。
             # 自动清理（切换脚本自带 UAC 提权；取消提权则保留原警告）。
-            targets, proxy_err = probe.portproxy_targets(int(PORT))
-            if targets:
-                self.log_async("检测到端口转发残留，正在清理（如弹出 UAC 请点「是」）…")
-                result = self._run_switch(SWITCH_PS1, *_ps_args(), "-CleanupOnly", "-NoPause", timeout=120)
-                if result.ok:
-                    self.log_async("端口转发残留清理完成。")
-                else:
-                    self.log_async(f"端口转发残留清理失败：{result.why() or '没有更详细的输出'}。"
-                                   "可点「恢复本机模式」重试，或手动执行 netsh 清理。")
-            elif proxy_err:
-                self.log_async(f"端口转发状态查不到（{proxy_err}），未自动清理。")
+            self._cleanup_residue()
         else:
             self.log_async("DeepSeek Harness 已停止。")
+
+    def _on_residue_click(self) -> None:
+        """状态条残留芯片的点击入口：清一遍转发残留，结果进日志。"""
+        self._cleanup_residue()
+
+    def _cleanup_residue(self) -> None:
+        """检测并清理端口转发残留：成功/失败都如实写日志，最后强制刷新状态。"""
+        targets, proxy_err = probe.portproxy_targets(int(PORT))
+        if not targets:
+            if proxy_err:
+                self.log_async(f"端口转发状态查不到（{proxy_err}），未自动清理。")
+            return
+        self.log_async("检测到端口转发残留，正在清理（如弹出 UAC 请点「是」）…")
+        result = self._run_switch(SWITCH_PS1, *_ps_args(), "-CleanupOnly", "-NoPause", timeout=120)
+        if result.ok:
+            self.log_async("端口转发残留清理完成。")
+        else:
+            self.log_async(f"端口转发残留清理失败：{result.why() or '没有更详细的输出'}。"
+                           "可点「恢复本机模式」重试，或手动执行 netsh 清理。")
+        self.refresh(force=True)
 
     def _ask_main(self, fn, *args):
         """在工作线程里等主线程弹一次对话框（Tk 控件只能主线程碰）。"""

@@ -38,6 +38,28 @@ def run_probe(processes=([], None), listening=False, targets=([], None),
     )
 
 
+class ResidueTests(unittest.TestCase):
+    """端口转发残留：转发规则在、本机 DSH 进程不在 → residue=True（假活可见）。"""
+
+    def test_rules_without_pids_is_residue(self):
+        state = run_probe(processes=([], None), listening=False,
+                          targets=(LOCAL_TARGETS, None))
+        self.assertIs(state.residue, True)
+
+    def test_rules_with_dsh_running_is_not_residue(self):
+        state = run_probe(processes=([123], None), listening=True,
+                          targets=(LOCAL_TARGETS, None))
+        self.assertIs(state.residue, False)
+
+    def test_no_rules_is_not_residue(self):
+        state = run_probe(processes=([], None), targets=([], None))
+        self.assertIs(state.residue, False)
+
+    def test_unknown_probe_is_unknown_residue(self):
+        state = run_probe(processes=(None, "err"), targets=(None, "err"))
+        self.assertIsNone(state.residue)
+
+
 class PhaseTests(unittest.TestCase):
     def test_running_needs_port_and_own_pid(self):
         state = run_probe(processes=([111], None), listening=True, targets=(LOCAL_TARGETS, None))

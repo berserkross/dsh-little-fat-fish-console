@@ -21,7 +21,8 @@ from pathlib import Path
 from . import config, logtail, probe, psrun, resources, textutil
 
 LOG_LINES = 500
-FILES = ("meta.json", "probe.txt", "log-tail.txt", "windows.txt")
+STARTUP_FAILURES = 20
+FILES = ("meta.json", "probe.txt", "log-tail.txt", "windows.txt", "startup-failures.txt")
 
 
 def _plain(value):
@@ -145,8 +146,40 @@ def windows_report(port: int, *, ps_runner=None, proxy_runner=None,
     return "\n".join(lines)
 
 
+def startup_failures(cfg, *, count: int = STARTUP_FAILURES) -> str:
+    """DSH 启动失败日志摘要：按修改时间取最近 count 条 startup-*.log，
+    每条给文件名 + 第一行关键错误（StartupError / EADDRINUSE / startup failed）。
+    内容进 zip 前统一过 redact_text，和其余条目同一条脱敏管线。
+    """
+    home = getattr(cfg, "dsh_home", None)
+    if not home:
+        return "（DSH_HOME 未探测到，无法收集启动失败摘要）"
+    log_dir = Path(home) / "logs"
+    if not log_dir.is_dir():
+        return f"（没有启动日志目录：{log_dir}）"
+    files = sorted(log_dir.glob("startup-*.log"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)[:count]
+    if not files:
+        return "（没有 startup-*.log 启动失败日志）"
+    lines = []
+    for path in files:
+        key = ""
+        fallback = ""
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if "EADDRINUSE" in line:
+                    key = line.strip()[:160]
+                    break
+                if not fallback and any(w in line for w in ("StartupError", "startup failed")):
+                    fallback = line.strip()[:160]
+        except OSError:
+            key = "（读取失败）"
+        lines.append(f"{path.name} :: {key or fallback or '（没有识别到错误行）'}")
+    return "\n".join(lines)
+
+
 def build(dest: Path | str, *, meta: dict, probe_text: str,
-          log_text: str, windows_text: str) -> Path:
+          log_text: str, windows_text: str, startup_text: str = "") -> Path:
     """写 zip。每个条目在写入前就过 redact_text，写完不落任何中间文件。"""
     dest = Path(dest)
     if dest.parent and not dest.parent.exists():
@@ -156,6 +189,7 @@ def build(dest: Path | str, *, meta: dict, probe_text: str,
         "probe.txt": probe_text,
         "log-tail.txt": log_text,
         "windows.txt": windows_text,
+        "startup-failures.txt": startup_text,
     }
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as archive:
         for name in FILES:
@@ -171,4 +205,5 @@ def export(dest: Path | str, *, cfg, status=None, raw: probe.RawProbe | None = N
         probe_text=probe_report(raw, status),
         log_text=log_tail(cfg),
         windows_text=windows_report(int(cfg.port)),
+        startup_text=startup_failures(cfg),
     )

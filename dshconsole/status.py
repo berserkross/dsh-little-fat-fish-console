@@ -45,6 +45,7 @@ class Status:
     port_open: bool | None = None
     phone_open: bool | None = None                       # 端口转发指向本机端口 + 防火墙规则都在
     phone_targets: list[tuple[str, int]] | None = None   # 当前转发指向的 (地址, 端口)
+    residue: bool | None = None                          # 转发规则残留（规则在、本机 PID 不在）
     ts_ip: str | None = None
     lan_ips: list[str] | None = None
     notes: list[str] = field(default_factory=list)        # 人话：哪些项没查到、为什么
@@ -103,6 +104,11 @@ def assemble(cfg, *, pids: list[int] | None, pids_err: str | None, listening: bo
     port = int(cfg.port)
     phone, phone_notes = _phone_from_values(targets, proxy_err, allowed, firewall_err, port)
 
+    if pids is None or targets is None:
+        residue = None
+    else:
+        residue = len(pids) == 0 and len(targets) > 0
+
     primary: list[str] = []
     # 判定规则（顺序即优先级）：
     #   关键探测（进程列表 / 端口）任一为 None        -> UNKNOWN（查不到不等于没在跑）
@@ -153,6 +159,7 @@ def assemble(cfg, *, pids: list[int] | None, pids_err: str | None, listening: bo
         port_open=listening,
         phone_open=phone,
         phone_targets=targets,
+        residue=residue,
         ts_ip=ts_ip,
         lan_ips=lan,
         notes=primary + phone_notes + tail_ips,

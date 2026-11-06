@@ -11,7 +11,7 @@ try:
 except Exception as exc:  # noqa: BLE001 - 缺 GUI 依赖时跳过
     raise unittest.SkipTest("无法导入 GUI：" + str(exc))
 
-from dshconsole import adopt, snapshot, status, tasks
+from dshconsole import adopt, psrun, snapshot, status, tasks
 
 FAKE_BIN_JS = r"C:\自检\node_modules\@deepseek-ai\dsh\lib\bin.js"
 
@@ -47,6 +47,7 @@ class FakeApp:
         self.lbl_phone = Widget()
         self.lbl_net = Widget()
         self.lbl_detail = Widget()
+        self.lbl_residue = Widget()
         self.btn_adopt = Widget()
         self.lbl_close_hint = Widget()
         self._queue = tasks.TaskQueue()                      # 真队列：on_change 同步执行
@@ -76,6 +77,12 @@ class FakeApp:
 
     def _sync_adopt_button(self):
         dsh_gui.ConsoleApp._sync_adopt_button(self)
+
+    def _on_residue_click(self):
+        dsh_gui.ConsoleApp._on_residue_click(self)
+
+    def _cleanup_residue(self):
+        dsh_gui.ConsoleApp._cleanup_residue(self)
 
     def _sync_primary(self, phase):
         dsh_gui.ConsoleApp._sync_primary(self, phase)
@@ -323,6 +330,52 @@ class TrayFallbackTests(unittest.TestCase):
         self.assertFalse(app._close_to_tray)
         self.assertEqual(app.lbl_close_hint.kw["text"], "关闭按钮：退出程序")
         self.assertTrue(any("退回普通窗口" in line for line in app.logged))
+
+
+class ResidueChipTests(unittest.TestCase):
+    """状态条上的「端口转发残留」芯片：残留态可见、点击走 -CleanupOnly、结果如实写日志。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def _residue_state(self):
+        return status.Status(phase=status.Phase.STOPPED, pids=[], port_open=False,
+                             phone_open=False, ts_ip=None, lan_ips=None, notes=[],
+                             residue=True)
+
+    def test_apply_status_shows_residue_chip(self):
+        app = FakeApp()
+        self.app_cls._apply_status(app, self._residue_state())
+        self.assertIn("残留", app.lbl_residue.kw.get("text", ""))
+
+    def test_apply_status_hides_chip_when_clean(self):
+        app = FakeApp()
+        state = status.Status(phase=status.Phase.STOPPED, pids=[], port_open=False,
+                              phone_open=False, ts_ip=None, lan_ips=None, notes=[],
+                              residue=False)
+        self.app_cls._apply_status(app, state)
+        self.assertEqual(app.lbl_residue.kw.get("text", ""), "")
+
+    def test_residue_click_runs_cleanup_and_logs_success(self):
+        app = FakeApp()
+        calls = []
+        app._run_switch = (lambda script, *args, **kw:
+                           calls.append((script, args, kw)) or
+                           psrun.PsResult(ok=True, code=0, stdout="", stderr="", error=None))
+        with mock.patch.object(dsh_gui.probe, "portproxy_targets",
+                               lambda port: (["127.0.0.1"], None)):
+            self.app_cls._on_residue_click(app)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("-CleanupOnly", calls[0][1])
+        self.assertTrue(any("端口转发残留清理完成" in line for line in app.logged))
+
+    def test_residue_cleanup_failure_is_logged(self):
+        app = FakeApp()
+        app._run_switch = lambda *a, **kw: psrun.PsResult(
+            ok=False, code=1, stdout="", stderr="用户取消了 UAC", error=None)
+        with mock.patch.object(dsh_gui.probe, "portproxy_targets",
+                               lambda port: (["127.0.0.1"], None)):
+            self.app_cls._on_residue_click(app)
+        self.assertTrue(any("端口转发残留清理失败" in line for line in app.logged))
 
 
 if __name__ == "__main__":
