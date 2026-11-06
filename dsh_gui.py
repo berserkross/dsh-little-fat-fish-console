@@ -1409,9 +1409,16 @@ class ConsoleApp(ctk.CTk):
             auto_relay(state)
 
     def _sync_detail(self, state: "status.Status") -> None:
-        """状态条中段：PID 与端口。数字走等宽字体，刷新时宽度不抖。"""
+        """状态条中段：PID 与端口；「启动中」阶段换成已用秒数 + 最近一行启动日志。"""
         label = getattr(self, "lbl_detail", None)
         if label is None:            # 控件替身 / 还没建好
+            return
+        start_text = self._startup_line(state)
+        if start_text is not None:
+            try:
+                label.configure(text=start_text)
+            except Exception:      # noqa: BLE001
+                pass
             return
         pids = "、".join(str(pid) for pid in (state.pids or [])) or "—"
         port = f"{PORT}（在线）" if state.port_open else f"{PORT}（离线）"
@@ -1419,6 +1426,30 @@ class ConsoleApp(ctk.CTk):
             label.configure(text=f"PID {pids} · 端口 {port}")
         except Exception:      # noqa: BLE001
             pass
+
+    def _startup_line(self, state: "status.Status") -> "str | None":
+        """启动阶段的中段文案：已用秒数 + 最近一行启动日志；完成后停留 2 秒再回 PID/端口。
+
+        None = 没有启动展示，走正常的 PID/端口文案。日志行必须过脱敏（里面可能带 token）。
+        """
+        epoch = getattr(self, "_start_epoch", 0.0)
+        if not epoch:
+            return None
+        now = time.time()
+        if state.phase is status.Phase.STARTING:
+            last = logtail.read_tail(TOKEN_LOG, 1) if TOKEN_LOG else ""
+            stripped = (last or "").strip()
+            line = stripped.splitlines()[-1] if stripped else "（启动日志还没有输出）"
+            line = textutil.redact_text(line)[:80]
+            return f"启动中 {now - epoch:.1f}s · {line}"
+        if state.phase is status.Phase.RUNNING:
+            done_at = getattr(self, "_startup_done_at", None)
+            if done_at is None:
+                done_at = now
+                self._startup_done_at = done_at
+            if now - done_at <= 2.0:
+                return f"启动完成（{done_at - epoch:.1f}s）"
+        return None
 
     def _log_net_once(self, state: "status.Status") -> None:
         """网络细节（Tailscale / 局域网 / Token）只在变化时写日志。

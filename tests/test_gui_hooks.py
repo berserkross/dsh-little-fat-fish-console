@@ -84,6 +84,9 @@ class FakeApp:
     def _cleanup_residue(self):
         dsh_gui.ConsoleApp._cleanup_residue(self)
 
+    def _startup_line(self, state):
+        return dsh_gui.ConsoleApp._startup_line(self, state)
+
     def _sync_primary(self, phase):
         dsh_gui.ConsoleApp._sync_primary(self, phase)
 
@@ -376,6 +379,48 @@ class ResidueChipTests(unittest.TestCase):
                                lambda port: (["127.0.0.1"], None)):
             self.app_cls._on_residue_click(app)
         self.assertTrue(any("端口转发残留清理失败" in line for line in app.logged))
+
+
+class StartupLineTests(unittest.TestCase):
+    """阶段 4：启动中状态条显示已用秒数 + 最近一行启动日志；完成后停留 2 秒再回正常。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def test_starting_phase_shows_elapsed_and_redacted_log_line(self):
+        app = FakeApp()
+        app._start_epoch = 100.0
+        state = status.Status(phase=status.Phase.STARTING, pids=[123], port_open=False)
+        with mock.patch.object(dsh_gui.time, "time", lambda: 113.5), \
+             mock.patch.object(dsh_gui.logtail, "read_tail",
+                               lambda path, count: "dsh web: http://127.0.0.1:3080/?token=secret\n"):
+            self.app_cls._sync_detail(app, state)
+        text = app.lbl_detail.kw.get("text", "")
+        self.assertIn("启动中 13.5s", text)
+        self.assertNotIn("secret", text)          # 日志行含 token，必须脱敏
+
+    def test_after_running_holds_two_seconds_then_normal(self):
+        app = FakeApp()
+        app._start_epoch = 100.0
+        state = status.Status(phase=status.Phase.RUNNING, pids=[123], port_open=True)
+        with mock.patch.object(dsh_gui.time, "time", lambda: 115.0):
+            self.app_cls._sync_detail(app, state)
+        self.assertIn("启动完成", app.lbl_detail.kw.get("text", ""))
+        with mock.patch.object(dsh_gui.time, "time", lambda: 118.0):
+            self.app_cls._sync_detail(app, state)
+        self.assertIn("PID 123", app.lbl_detail.kw.get("text", ""))
+
+    def test_seconds_tick_with_elapsed_time(self):
+        app = FakeApp()
+        app._start_epoch = 100.0
+        state = status.Status(phase=status.Phase.STARTING, pids=[123], port_open=False)
+        with mock.patch.object(dsh_gui.logtail, "read_tail", lambda path, count: ""):
+            with mock.patch.object(dsh_gui.time, "time", lambda: 100.0):
+                self.app_cls._sync_detail(app, state)
+            first = app.lbl_detail.kw.get("text", "")
+            with mock.patch.object(dsh_gui.time, "time", lambda: 101.5):
+                self.app_cls._sync_detail(app, state)
+            second = app.lbl_detail.kw.get("text", "")
+        self.assertNotEqual(first, second)          # 秒数在递增
 
 
 if __name__ == "__main__":

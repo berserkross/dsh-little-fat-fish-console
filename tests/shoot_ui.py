@@ -55,6 +55,11 @@ def _residue():
                          residue=True)
 
 
+def _starting():
+    return status.Status(phase=status.Phase.STARTING, pids=[4321], port_open=False,
+                         phone_open=False, ts_ip=None, lan_ips=None, notes=[])
+
+
 def settle(app, seconds: float = 0.55) -> None:
     """把挂起的事件跑完：玻璃底图是 140ms 防抖之后才画的。"""
     end = time.time() + seconds
@@ -254,6 +259,16 @@ def main() -> int:
     settle(app)
     clear_selection(app)
     grab(app, "03b-residue.png")
+
+    # 03c 启动中（秒数 + 最近一行启动日志，替代无限转圈）
+    app._start_epoch = time.time()
+    app._apply_status(_starting())
+    app._append_log(["dsh web 正在启动…"])
+    settle(app, 1.0)
+    clear_selection(app)
+    grab(app, "03c-starting.png")
+    app._start_epoch = 0.0
+    app._startup_done_at = None
 
     # 04 900x900 窄窗（2 列组卡 + 第三组通栏）
     app.geometry("900x900")
