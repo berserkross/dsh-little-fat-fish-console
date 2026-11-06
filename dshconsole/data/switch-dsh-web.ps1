@@ -159,6 +159,7 @@ if (-not $DryRun -and -not (Test-Admin)) {
         Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $argList | Out-Null
     } catch {
         Write-Info '已取消 UAC 授权，未做任何更改。'
+        exit 1
     }
     exit
 }

@@ -1884,8 +1884,12 @@ class ConsoleApp(ctk.CTk):
             targets, proxy_err = probe.portproxy_targets(int(PORT))
             if targets:
                 self.log_async("检测到端口转发残留，正在清理（如弹出 UAC 请点「是」）…")
-                self._run_switch(SWITCH_PS1, *_ps_args(), "-CleanupOnly", "-NoPause", timeout=120)
-                self.log_async("端口转发残留清理完成。")
+                result = self._run_switch(SWITCH_PS1, *_ps_args(), "-CleanupOnly", "-NoPause", timeout=120)
+                if result.ok:
+                    self.log_async("端口转发残留清理完成。")
+                else:
+                    self.log_async(f"端口转发残留清理失败：{result.why() or '没有更详细的输出'}。"
+                                   "可点「恢复本机模式」重试，或手动执行 netsh 清理。")
             elif proxy_err:
                 self.log_async(f"端口转发状态查不到（{proxy_err}），未自动清理。")
         else:

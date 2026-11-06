@@ -29,6 +29,11 @@ class SwitchScriptTests(unittest.TestCase):
         text = self.raw.decode("utf-8-sig")
         self.assertNotIn("-Profile Private,Domain", text)
 
+    def test_uac_cancel_exits_nonzero(self):
+        # 用户取消 UAC 时外层脚本必须以非零码退出，GUI 才能如实报"清理失败"（P1 修复的另一半）
+        text = self.raw.decode("utf-8-sig").replace("\r\n", "\n")
+        self.assertIn("已取消 UAC 授权，未做任何更改。'\n        exit 1", text)
+
 
 if __name__ == "__main__":
     unittest.main()
