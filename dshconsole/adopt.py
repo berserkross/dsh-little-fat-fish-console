@@ -95,7 +95,7 @@ def port_owner_command(port: int) -> str:
     """一条 PowerShell：监听 port 的 PID + 它的命令行（一次冷启动，不做两次查询）。"""
     return (
         "$ErrorActionPreference = 'Stop'; "
-        f"$conn = @(Get-NetTCPConnection -LocalPort {int(port)} -State Listen "
+        f"$conn = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort {int(port)} -State Listen "
         "-ErrorAction Stop | Select-Object -First 1); "
         "if ($conn.Count -eq 0) { 'null'; exit 0 }; "
         "$own = [int]$conn[0].OwningProcess; "

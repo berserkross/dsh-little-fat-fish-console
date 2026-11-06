@@ -287,6 +287,8 @@ def _process_pairs(data: object) -> tuple[list[tuple[int, str]] | None, str | No
             continue
         if isinstance(command_line, str) and command_line:
             processes.append((pid, command_line))
+        else:
+            return None, "部分 node 进程命令行不可读取，无法安全判定 DSH 是否运行"
     return processes, None
 
 
