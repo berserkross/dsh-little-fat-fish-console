@@ -1802,27 +1802,35 @@ class ConsoleApp(ctk.CTk):
                            "不再起第二份 —— 起了也只会撞出 EADDRINUSE。要换成控制台这份，先点「关闭 DSH」。")
             return
         self.log_async("正在启动 DeepSeek Harness…")
-        # 主路径不走 ps1：launch-dsh.ps1 上有参数绑定、提权、「端口在线就只开浏览器」几道门，
-        # 在控制台的非交互上下文里任何一道都会变成「点了没反应」。直接 Start-Process 拉起最短也最可控，
-        # 参数与日志文件仍与 ps1 约定一致，所以 token 照样可读、二维码照样可用。
-        if not self._start_direct():
-            self.log_async("直接启动没成功，回退到随包脚本…")
-            r = run_ps(LAUNCH_PS1, *_ps_args(include_chrome=True), timeout=90)
-            out = (r.stdout or "").strip()
-            if out:
-                self.log_async(out[-300:])
-            if not r.ok:
-                detail = ((r.why() or "") + " " + (r.stderr or "").strip()[-300:]).strip()
-                self.log_async(f"启动脚本返回失败：{detail or '没有更详细的输出'}")
-        if not self._wait_port(True, 20.0):
-            self.log_async("启动失败：端口 20 秒内没有起来，请查看 dsh-web.stderr.log。")
+        # 启动串行化闸：GUI/ps1/切换/重启四条路径互斥，同一时刻只有一个入口在拉起 DSH。
+        lock = single.acquire_start_lock()
+        if lock.blocked:
+            self.log_async(f"启动被闸门拦住：{lock.reason}。稍后再点一次即可。")
             return
-        started_pids, started_err = self._pids_provider()
-        if not started_pids:
-            self.log_async(f"启动尚未验证：端口在线，但无法确认 DSH 进程（{started_err or '未匹配'}）。")
-            return
-        self.log_async("启动完成：已识别本机 DSH 进程并确认端口在线。")
-        self._verify_token_after_start()
+        try:
+            # 主路径不走 ps1：launch-dsh.ps1 上有参数绑定、提权、「端口在线就只开浏览器」几道门，
+            # 在控制台的非交互上下文里任何一道都会变成「点了没反应」。直接 Start-Process 拉起最短也最可控，
+            # 参数与日志文件仍与 ps1 约定一致，所以 token 照样可读、二维码照样可用。
+            if not self._start_direct():
+                self.log_async("直接启动没成功，回退到随包脚本…")
+                r = run_ps(LAUNCH_PS1, *_ps_args(include_chrome=True), timeout=90)
+                out = (r.stdout or "").strip()
+                if out:
+                    self.log_async(out[-300:])
+                if not r.ok:
+                    detail = ((r.why() or "") + " " + (r.stderr or "").strip()[-300:]).strip()
+                    self.log_async(f"启动脚本返回失败：{detail or '没有更详细的输出'}")
+            if not self._wait_port(True, 20.0):
+                self.log_async("启动失败：端口 20 秒内没有起来，请查看 dsh-web.stderr.log。")
+                return
+            started_pids, started_err = self._pids_provider()
+            if not started_pids:
+                self.log_async(f"启动尚未验证：端口在线，但无法确认 DSH 进程（{started_err or '未匹配'}）。")
+                return
+            self.log_async("启动完成：已识别本机 DSH 进程并确认端口在线。")
+            self._verify_token_after_start()
+        finally:
+            lock.release()
 
     def _start_direct(self) -> bool:
         """用 PowerShell Start-Process 直接拉起 dsh web，绕开 ps1 的全部门槛。返回是否拉起。"""

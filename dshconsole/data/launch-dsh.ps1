@@ -1,16 +1,29 @@
 ﻿param(
-    [string]$Harness = '',   # DSH 安装目录（含 node_modules\@deepseek-ai\dsh）；空则回退 DSH_HOME 父目录，仍为空则报错退出
+    [string]$Harness = '',   # DSH 安装目录（含 node_modules\@deepseek-ai\dsh）；空则按布局推导，仍找不到则报错退出
     [string]$NodeExe = '',   # node.exe 全路径；空则用 PATH 里的 node
     [string]$BinJs   = '',   # bin.js 全路径；空则由 $Harness 推导
     [string]$DshHome = '',   # DSH_HOME；空则由 $Harness 推导
     [int]$Port       = 3080, # 本机网页端口
-    [string]$Chrome  = ''    # 打开地址用的浏览器；空则用系统默认浏览器
+    [string]$Chrome  = '',   # 打开地址用的浏览器；空则用系统默认浏览器
+    [switch]$NoOpen          # 不打开浏览器（自动化/验收用）
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
 
 # ---------------- 参数回退（GUI 一律显式传参，这里只兜双击独立运行） ----------------
-if (-not $Harness -and $env:DSH_HOME) { $Harness = Split-Path -Parent $env:DSH_HOME }
+# 推导以「bin.js 实际存在」为准：先按标准布局（DSH_HOME 的父目录），
+# 再按本机布局（Documents\Codex\apps\deepseek-harness）。
+if (-not $Harness) {
+    $candidates = @()
+    if ($env:DSH_HOME) { $candidates += (Split-Path -Parent $env:DSH_HOME) }
+    $candidates += (Join-Path $env:USERPROFILE 'Documents\Codex\apps\deepseek-harness')
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath (Join-Path $c 'node_modules\@deepseek-ai\dsh\lib\bin.js'))) {
+            $Harness = $c
+            break
+        }
+    }
+}
 if (-not $Harness) {
     Write-Host "找不到 DeepSeek Harness：请用 -Harness 指定安装目录，或设置 DSH_HOME 环境变量。" -ForegroundColor Red
     exit 1
@@ -38,6 +51,7 @@ if (-not $DshHome) { $DshHome = Join-Path $base '.dsh' }
 $env:DSH_HOME = $DshHome
 
 function Open-Url([string]$url) {
+    if ($NoOpen) { return }
     if ($Chrome -and (Test-Path -LiteralPath $Chrome)) {
         Start-Process -FilePath $Chrome -ArgumentList $url
     } else {
@@ -45,51 +59,35 @@ function Open-Url([string]$url) {
     }
 }
 
-function Read-RecordedUrl {
-    if (Test-Path -LiteralPath $urlFile) {
-        $u = (Get-Content -LiteralPath $urlFile -Raw).Trim()
-        if ($u -match '^https?://') { return $u }
-    }
-    if (Test-Path -LiteralPath $out) {
-        $m = Select-String -LiteralPath $out -Pattern "http://127\.0\.0\.1:$Port/\?token=(\S+)" | Select-Object -Last 1
-        if ($m) { return $m.Matches[0].Value }
-    }
-    return $null
+# ---------------- 运行判定：与 GUI 的 probe.classify 同一条规则 ----------------
+# 只认「本机这一份 bin.js」的 node 进程：别的安装目录里同形状的进程不算。
+$escaped = [regex]::Escape($bin)
+$dshProcs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match $escaped }
+if (@($dshProcs).Count -gt 0) {
+    Write-Host ("DSH 已在运行（PID " + $dshProcs[0].ProcessId + "），不再拉起第二份。")
+    exit 0
 }
 
-# 用“DSH node 进程是否存在”判断运行状态：netsh portproxy 的转发监听会让 netstat 误报端口在线
-$dshProcs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match 'deepseek-ai[\\/]dsh[\\/]lib[\\/]bin\.js' }
-if (@($dshProcs).Count -gt 0) {
-    $url = Read-RecordedUrl
-    if ($url) {
-        # The recorded token is per-process: a server restarted elsewhere makes
-        # it stale. Ask the server; any 2xx/3xx means the token is still valid.
-        $fresh = $false
-        try {
-            $probe = Invoke-WebRequest -Uri $url -MaximumRedirection 0 -UseBasicParsing -TimeoutSec 2
-            if ([int]$probe.StatusCode -ge 200 -and [int]$probe.StatusCode -lt 400) { $fresh = $true }
-        } catch {
-            if ($_.Exception.Response) {
-                $code = [int]$_.Exception.Response.StatusCode
-                if ($code -ge 200 -and $code -lt 400) { $fresh = $true }
-            }
-        }
-        if ($fresh) {
-            Open-Url $url
-            exit 0
-        }
-    }
-    # No usable token: open the clean URL and rely on the browser session
-    # cookie (minted by a previous token visit; its signing secret is
-    # persisted in .credentials.yaml and survives restarts).
-    Open-Url "http://127.0.0.1:$Port/"
-    exit 0
+# ---------------- 启动串行化闸 ----------------
+# 同一时刻只允许一个入口拉起 DSH：多入口（GUI/脚本/切换/重启）互斥，掐死 EADDRINUSE。
+$gate = New-Object System.Threading.Mutex($false, 'Local\DshConsole.DshStart')
+$owns = $false
+try { $owns = $gate.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owns = $true }
+if (-not $owns) {
+    Write-Host '另一个入口正在启动 DSH，稍后再试。'
+    $gate.Dispose()
+    exit 1
 }
 
 Set-Content -LiteralPath $out -Value ''
 Set-Content -LiteralPath $err -Value ''
-Start-Process -FilePath $node -ArgumentList @($bin, 'web', '--no-open', '--port', "$Port") -WorkingDirectory $base -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Hidden | Out-Null
+try {
+    Start-Process -FilePath $node -ArgumentList @($bin, 'web', '--no-open', '--port', "$Port") -WorkingDirectory $base -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Hidden | Out-Null
+} finally {
+    $gate.ReleaseMutex()
+    $gate.Dispose()
+}
 
 $url = $null
 for ($i = 0; $i -lt 40; $i++) {

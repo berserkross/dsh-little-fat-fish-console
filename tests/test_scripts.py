@@ -35,5 +35,33 @@ class SwitchScriptTests(unittest.TestCase):
         self.assertIn("已取消 UAC 授权，未做任何更改。'\n        exit 1", text)
 
 
+class LaunchScriptTests(unittest.TestCase):
+    """随包 launch-dsh.ps1：BOM、本机 bin.js 判定、启动串行化闸、独立双击回退。"""
+
+    def setUp(self):
+        path = pathlib.Path(__file__).resolve().parent.parent / "dshconsole" / "data" / "launch-dsh.ps1"
+        self.raw = path.read_bytes()
+
+    def test_launch_ships_with_utf8_bom(self):
+        self.assertTrue(self.raw.startswith(b"\xef\xbb\xbf"),
+                        "launch-dsh.ps1 丢了 UTF-8 BOM，Windows PowerShell 5.1 会按 ANSI 解码中文")
+
+    def test_launch_uses_exact_bin_js_rule_and_start_gate(self):
+        text = self.raw.decode("utf-8-sig").replace("\r\n", "\n")
+        self.assertIn("[regex]::Escape($bin)", text)          # 与 GUI probe.classify 同规则：只认本机这份 bin.js
+        self.assertIn("Local\\DshConsole.DshStart", text)     # 启动串行化命名互斥体
+        self.assertIn("[switch]$NoOpen", text)
+
+    def test_launch_fallback_knows_this_machines_layout(self):
+        text = self.raw.decode("utf-8-sig").replace("\r\n", "\n")
+        self.assertIn("Documents\\Codex\\apps\\deepseek-harness", text)
+
+    def test_switch_start_dsh_goes_through_the_gate(self):
+        raw = (pathlib.Path(__file__).resolve().parent.parent / "dshconsole" / "data"
+               / "switch-dsh-web.ps1").read_bytes()
+        body = raw.decode("utf-8-sig").replace("\r\n", "\n")
+        self.assertIn("Local\\DshConsole.DshStart", body)
+
+
 if __name__ == "__main__":
     unittest.main()

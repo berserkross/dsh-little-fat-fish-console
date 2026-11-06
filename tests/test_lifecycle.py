@@ -11,7 +11,7 @@ try:
 except Exception as exc:  # noqa: BLE001 - 缺 GUI 依赖时跳过
     raise unittest.SkipTest("无法导入 GUI：" + str(exc))
 
-from dshconsole import probe, psrun
+from dshconsole import probe, psrun, single
 
 
 def _ok_result() -> psrun.PsResult:
@@ -159,6 +159,39 @@ class ProcessPairsTests(unittest.TestCase):
         pairs, err = probe._process_pairs(data)
         self.assertIsNone(pairs)
         self.assertIn("无法安全判定", err)
+
+
+class StartGateTests(unittest.TestCase):
+    """_start() 的启动串行化闸：多入口互斥，拿不到闸就不拉起。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def _gated_app(self):
+        app = FakeApp()
+        app._port_open = lambda: False
+        app._wait_port = lambda want, timeout: True
+        app._verify_token_after_start = lambda: None
+        return app
+
+    def test_start_blocked_by_gate_logs_and_does_not_launch(self):
+        app = self._gated_app()
+        called = []
+        app._start_direct = lambda: called.append(1) or True
+        lock = single.StartLock(False, "另一个入口正在启动 DSH，稍后再试")
+        with mock.patch.object(dsh_gui.single, "acquire_start_lock", lambda: lock):
+            self.app_cls._start(app)
+        self.assertFalse(called)
+        self.assertTrue(any("闸门拦住" in line for line in app.logged))
+
+    def test_start_proceeds_when_gate_open(self):
+        app = self._gated_app()
+        app._pids_provider = lambda: ([123], None)
+        app._start_direct = lambda: True
+        lock = single.StartLock(True, "")
+        with mock.patch.object(dsh_gui.single, "acquire_start_lock", lambda: lock), \
+             mock.patch.object(dsh_gui.time, "sleep", lambda _s: None):
+            self.app_cls._start(app)
+        self.assertTrue(any("启动完成" in line for line in app.logged))
 
 
 if __name__ == "__main__":

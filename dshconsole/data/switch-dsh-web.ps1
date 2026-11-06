@@ -121,9 +121,23 @@ function Remove-Firewall {
 }
 
 function Start-Dsh([string[]]$ExtraArgs) {
-    $argv = @($BinJs, 'web', '--no-open', '--port', "$Port") + $ExtraArgs
-    Start-Process -FilePath $NodeExe -ArgumentList $argv -WorkingDirectory $Harness `
-        -WindowStyle Hidden -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog | Out-Null
+    # 启动串行化闸：与 GUI / launch 脚本共用同一把命名互斥体，多入口互斥防 EADDRINUSE。
+    $gate = New-Object System.Threading.Mutex($false, 'Local\DshConsole.DshStart')
+    $owns = $false
+    try { $owns = $gate.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owns = $true }
+    if (-not $owns) {
+        Write-Info '另一个入口正在启动 DSH，稍后再试。'
+        $gate.Dispose()
+        return
+    }
+    try {
+        $argv = @($BinJs, 'web', '--no-open', '--port', "$Port") + $ExtraArgs
+        Start-Process -FilePath $NodeExe -ArgumentList $argv -WorkingDirectory $Harness `
+            -WindowStyle Hidden -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog | Out-Null
+    } finally {
+        $gate.ReleaseMutex()
+        $gate.Dispose()
+    }
 }
 
 function Pause-End {

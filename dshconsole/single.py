@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 MUTEX_NAME = "Local\\DshConsole.SingleInstance"
 ACTIVATE_EVENT = "Local\\DshConsole.Activate"
+START_MUTEX_NAME = "Local\\DshConsole.DshStart"
 ERROR_ALREADY_EXISTS = 183
 EVENT_MODIFY_STATE = 0x0002
 SW_RESTORE = 9
@@ -150,3 +151,65 @@ def signal_activate(name: str = ACTIVATE_EVENT) -> bool:
         return True
     except Exception:  # noqa: BLE001 - 叫不醒只是体验降级
         return False
+
+
+class StartLock:
+    """启动串行化闸的句柄载体：acquired=False 表示另一个入口正在启动 DSH。
+
+    拿到的锁必须在启动动作完成后 release()：命名互斥体在句柄关闭时释放，
+    一直不关就会把后续所有入口都挡住。acquired=None 是降级放行（拿不到闸也要能启动）。
+    """
+
+    def __init__(self, acquired: bool | None, reason: str = "", handle=None):
+        self.acquired = acquired
+        self.reason = reason
+        self._handle = handle
+
+    @property
+    def blocked(self) -> bool:
+        return self.acquired is False
+
+    def release(self) -> None:
+        if self._handle is None:
+            return
+        try:
+            ctypes, wintypes = _win32()
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.ReleaseMutex.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.ReleaseMutex(self._handle)
+            kernel32.CloseHandle(self._handle)
+        except Exception:  # noqa: BLE001 - 关不掉句柄由进程退出兜底
+            pass
+        self._handle = None
+
+
+def acquire_start_lock(name: str = START_MUTEX_NAME) -> StartLock:
+    """尝试取得「启动中」命名互斥体；返回的 StartLock 用后必须 release()。
+
+    拿不到（WaitOne(0) 超时）说明另一个入口正在启动：不重试、不排队，如实报出。
+    上一任持有者崩掉留下弃锁（WAIT_ABANDONED）时视为拿到：弃锁本来就是给活人让路。
+    """
+    if os.name != "nt":
+        return StartLock(None, "非 Windows 系统，跳过启动闸")
+    try:
+        ctypes, wintypes = _win32()
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create = kernel32.CreateMutexW
+        create.restype = wintypes.HANDLE
+        create.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+        handle = create(None, False, name)
+        last_error = ctypes.get_last_error()
+    except Exception as exc:  # noqa: BLE001 - 拿不到闸也要能启动
+        return StartLock(None, f"启动闸不可用：{exc}")
+    if not handle:
+        return StartLock(None, f"CreateMutexW 失败（错误码 {last_error}）")
+    wait = kernel32.WaitForSingleObject
+    wait.restype = ctypes.c_uint32
+    wait.argtypes = (wintypes.HANDLE, ctypes.c_uint32)
+    result = wait(handle, 0)
+    if result in (0, 0x80):      # WAIT_OBJECT_0 / WAIT_ABANDONED：拿到
+        return StartLock(True, "", handle)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle(handle)
+    return StartLock(False, "另一个入口正在启动 DSH，稍后再试")

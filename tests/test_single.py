@@ -29,6 +29,40 @@ class GuardTests(unittest.TestCase):
         self.assertTrue(second.blocked)
         self.assertIn("已经有一个", second.reason)
 
+
+class StartLockTests(unittest.TestCase):
+    def test_blocked_property(self):
+        self.assertTrue(single.StartLock(False, "另一个入口").blocked)
+        self.assertFalse(single.StartLock(True).blocked)
+        self.assertFalse(single.StartLock(None, "跳过").blocked)
+
+    def test_non_windows_degrades_instead_of_blocking(self):
+        with mock.patch.object(single, "os", types.SimpleNamespace(name="posix")):
+            lock = single.acquire_start_lock()
+        self.assertIsNone(lock.acquired)
+        self.assertFalse(lock.blocked)
+        self.assertIn("非 Windows", lock.reason)
+
+    @unittest.skipUnless(single.os.name == "nt", "只在 Windows 上验证命名互斥体")
+    def test_second_start_lock_blocked_until_release(self):
+        # 竞争发生在跨进程/跨线程：互斥体对同一线程可重入，必须用另一条线程模拟竞争者。
+        import threading
+        first = single.acquire_start_lock("Local\\DshConsole.StartUnitTest")
+        self.assertTrue(first.acquired)
+        outcome = []
+        competitor = threading.Thread(
+            target=lambda: outcome.append(
+                single.acquire_start_lock("Local\\DshConsole.StartUnitTest")))
+        competitor.start()
+        competitor.join()
+        second = outcome[0]
+        self.assertFalse(second.acquired)
+        self.assertIn("另一个入口", second.reason)
+        first.release()
+        third = single.acquire_start_lock("Local\\DshConsole.StartUnitTest")
+        self.assertTrue(third.acquired)
+        third.release()
+
     def test_focus_window_without_such_title_returns_false(self):
         self.assertFalse(single.focus_window("绝对不存在的窗口标题-DSH-自检"))
 
