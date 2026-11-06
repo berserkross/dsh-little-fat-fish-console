@@ -57,15 +57,17 @@ function Read-RecordedUrl {
     return $null
 }
 
-$running = netstat -ano | Select-String ":$Port\s+.*LISTENING"
-if ($running) {
+# 用“DSH node 进程是否存在”判断运行状态：netsh portproxy 的转发监听会让 netstat 误报端口在线
+$dshProcs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match 'deepseek-ai[\\/]dsh[\\/]lib[\\/]bin\.js' }
+if (@($dshProcs).Count -gt 0) {
     $url = Read-RecordedUrl
     if ($url) {
         # The recorded token is per-process: a server restarted elsewhere makes
         # it stale. Ask the server; any 2xx/3xx means the token is still valid.
         $fresh = $false
         try {
-            $probe = Invoke-WebRequest -Uri $url -MaximumRedirection 0 -UseBasicParsing -TimeoutSec 5
+            $probe = Invoke-WebRequest -Uri $url -MaximumRedirection 0 -UseBasicParsing -TimeoutSec 2
             if ([int]$probe.StatusCode -ge 200 -and [int]$probe.StatusCode -lt 400) { $fresh = $true }
         } catch {
             if ($_.Exception.Response) {

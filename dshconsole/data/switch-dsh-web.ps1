@@ -3,6 +3,7 @@
     [switch]$DryRun,    # 只打印计划，不做任何改动
     [switch]$Force,     # 跳过确认
     [switch]$NoPause,   # 结束时不等待按键（自动化用）
+    [switch]$CleanupOnly,  # 只清理本端口全部转发规则，不碰进程、防火墙与服务
 
     [string]$Harness  = '',    # DSH 安装目录；空则回退 DSH_HOME 父目录，仍为空则报错退出
     [string]$NodeExe  = '',    # node.exe 全路径；空则用 PATH 里的 node
@@ -92,6 +93,15 @@ function Remove-Proxy([string]$ListenIp) {
     netsh interface portproxy delete v4tov4 listenaddress=$ListenIp listenport=$Port 2>$null | Out-Null
 }
 
+function Remove-AllProxies {
+    # IP 换过之后旧转发规则不会自己消失：清掉本端口全部规则，防止越攒越多
+    netsh interface portproxy show v4tov4 2>$null | ForEach-Object {
+        if ($_ -match '^\s*([0-9\.]+)\s+(\d+)\s+([0-9\.]+)\s+(\d+)\s*$' -and $Matches[2] -eq "$Port") {
+            netsh interface portproxy delete v4tov4 listenaddress=$($Matches[1]) listenport=$Port 2>$null | Out-Null
+        }
+    }
+}
+
 function Ensure-Firewall {
     # 实测：WLAN 与以太网都被 Windows 判为「公用」，而老规则只写了 Private,Domain ——
     # 规则存在、Enabled=True，局域网路径却整条静默失效。所以两件事都要做：
@@ -130,6 +140,7 @@ if (-not $DryRun -and -not (Test-Admin)) {
     if ($Restore) { $argList += '-Restore' }
     if ($Force)   { $argList += '-Force' }
     if ($NoPause) { $argList += '-NoPause' }
+    if ($CleanupOnly) { $argList += '-CleanupOnly' }
     # 参数化后关键一步：值参数必须一并透传，否则提权后的子进程只剩空默认值
     foreach ($pair in @(
         @('-Harness',  $Harness),
@@ -149,6 +160,14 @@ if (-not $DryRun -and -not (Test-Admin)) {
     } catch {
         Write-Info '已取消 UAC 授权，未做任何更改。'
     }
+    exit
+}
+
+if ($CleanupOnly) {
+    Write-Info "清理端口 $Port 的全部端口转发规则（不重启、不碰防火墙）..."
+    Remove-AllProxies
+    Write-Info '清理完成。'
+    Pause-End
     exit
 }
 
@@ -198,6 +217,7 @@ Stop-DshNode
 
 if ($Mode -eq 'expose') {
     Ensure-Firewall
+    Remove-AllProxies
     foreach ($ip in $allIps) { Add-Proxy $ip }
     $trusted = @('--trusted-host', "127.0.0.1:$Port", '--trusted-host', "localhost:$Port")
     foreach ($ip in $allIps) { $trusted += @('--trusted-host', "$ip`:$Port") }
@@ -206,7 +226,7 @@ if ($Mode -eq 'expose') {
     Write-Info '启动 DSH 网页服务（手机可访问）...'
     Start-Dsh $trusted
 } else {
-    foreach ($ip in $allIps) { Remove-Proxy $ip }
+    Remove-AllProxies
     Remove-Firewall
     Write-Info '启动 DSH 网页服务（仅本机）...'
     Start-Dsh @()

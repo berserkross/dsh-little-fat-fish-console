@@ -1544,6 +1544,9 @@ class ConsoleApp(ctk.CTk):
         if pids is None:
             self.log_async(f"未知：node 进程查不到（{err}），重启前不结束任何进程。")
             return
+        if not pids and self._port_open():
+            self.log_async("重启中止：端口已被占用，但未确认 DSH 进程身份。请先刷新状态或接管实例。")
+            return
         if not pids:
             self.log_async("没有正在运行的 DSH，直接启动。")
         else:
@@ -1563,7 +1566,11 @@ class ConsoleApp(ctk.CTk):
         self._start(force=True)
         if self._wait_port(True, 25.0):
             left, _err = self._pids_provider()
-            shown = "、".join(str(pid) for pid in left) if left else "未识别"
+            if not left:
+                self.log_async("重启尚未验证：端口在线，但无法确认本机 DSH 进程。")
+                self.refresh(force=True)
+                return
+            shown = "、".join(str(pid) for pid in left)
             self.log_async(f"重启完成：{PORT} 已在线（PID {shown}）。")
         else:
             self.log_async(f"重启未完成：{PORT} 在 25 秒内没有恢复监听，原因见上方启动输出。")
@@ -1773,7 +1780,7 @@ class ConsoleApp(ctk.CTk):
         # 「启动 DSH」现在是常驻可点的一颗按钮（不再只能从主按钮进去），
         # 所以这里加一道守卫：端口已经在线就不再加拉一份 DSH。
         # force=True 只给重启用：重启已经自己确认过端口关掉了，守卫在这儿会把它挡死。
-        if not force and self._port_open():
+        if self._port_open():
             self.log_async(f"{PORT} 已在监听：{self._port_owner_text()}。"
                            "不再起第二份 —— 起了也只会撞出 EADDRINUSE。要换成控制台这份，先点「关闭 DSH」。")
             return
@@ -1791,8 +1798,13 @@ class ConsoleApp(ctk.CTk):
                 detail = ((r.why() or "") + " " + (r.stderr or "").strip()[-300:]).strip()
                 self.log_async(f"启动脚本返回失败：{detail or '没有更详细的输出'}")
         if not self._wait_port(True, 20.0):
-            self.log_async("端口 20 秒内没起来：看上面的日志和 dsh-web.stderr.log。")
-        self.log_async("启动完成。")
+            self.log_async("启动失败：端口 20 秒内没有起来，请查看 dsh-web.stderr.log。")
+            return
+        started_pids, started_err = self._pids_provider()
+        if not started_pids:
+            self.log_async(f"启动尚未验证：端口在线，但无法确认 DSH 进程（{started_err or '未匹配'}）。")
+            return
+        self.log_async("启动完成：已识别本机 DSH 进程并确认端口在线。")
         self._verify_token_after_start()
 
     def _start_direct(self) -> bool:
@@ -1867,6 +1879,15 @@ class ConsoleApp(ctk.CTk):
             else:
                 shown = "、".join(str(pid) for pid in left) or "无"
                 self.log_async(f"警告：{PORT} 仍在监听，未完全停止（剩余 PID：{shown}）。")
+            # 端口还在监听但已无 DSH 进程：通常是手机访问的端口转发残留。
+            # 自动清理（切换脚本自带 UAC 提权；取消提权则保留原警告）。
+            targets, proxy_err = probe.portproxy_targets(int(PORT))
+            if targets:
+                self.log_async("检测到端口转发残留，正在清理（如弹出 UAC 请点「是」）…")
+                self._run_switch(SWITCH_PS1, *_ps_args(), "-CleanupOnly", "-NoPause", timeout=120)
+                self.log_async("端口转发残留清理完成。")
+            elif proxy_err:
+                self.log_async(f"端口转发状态查不到（{proxy_err}），未自动清理。")
         else:
             self.log_async("DeepSeek Harness 已停止。")
 
