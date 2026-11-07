@@ -7,7 +7,9 @@ DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双�
 用来在本机启动 / 停止 DSH Web 服务、把服务临时开给手机访问、以及随时看状态。
 
 > **当前版本 2.2.6**（2026-11-07）：根治「假活」闭环——端口转发残留不再让启动按钮误判，停止 DSH 后
-> 自动清理转发残留，启动/重启守卫不再撞 EADDRINUSE，进程判定收紧为「读不到就报未知」。
+> 自动清理转发残留，启动/重启守卫不再撞 EADDRINUSE，进程判定收紧为「读不到就报未知」；
+> 状态条新增「端口转发残留」芯片（一键清理）、启动串行化闸（四入口互斥）、诊断包启动失败摘要、
+> 「启动中」实时显示秒数与最近一行启动日志。
 > 2.2.5（2026-11-04）：v2 四个批次全部落地——可移植配置层、结构化探测与五态状态机、
 > 托盘常驻 / 日志跟随 / 脱敏诊断包 / 串行命令队列、可发布构建（PE 版本信息 + PyInstaller onefile），
 > 界面重排（画出来的玻璃 + ico 头像 + 按行日志 + 三组对齐的功能网格 + ⋯ 抽屉与浮层），
@@ -165,7 +167,7 @@ py -3.11 -m pip install "pyinstaller>=6,<7"
 py -3.11 -m PyInstaller --noconfirm DSHConsole.spec
 ```
 
-产物是 **onefile** 的 `dist\DSHConsole.exe`（2.2.6 实测 32,251,168 B，签名后 32,258,304 B）。
+产物是 **onefile** 的 `dist\DSHConsole.exe`（2.2.6 实测 32,259,099 B，签名后 32,266,240 B）。
 PE 版本资源由 `version_info.txt` 提供，资源管理器「属性 → 详细信息」能看到 `FileVersion 2.2.6.0`、
 `ProductName 小肥鱼控制台`、`CompanyName berserkross`。
 本机实测：Python 3.11.9 + PyInstaller 6.22.3，干净构建约 21 秒。
