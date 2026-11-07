@@ -6,7 +6,7 @@
 
 ## 结论速览
 
-- 阶段 0–4 **全部完成**，共 6 个 commit（`fe7519d` → 见 git log，最终 HEAD 以实际为准）；
+- 阶段 0–4 **全部完成**，共 7 个 commit（`fe7519d` … `acc94e5`，最终 HEAD 以实际为准）；
 - 单元/注入测试 **361 → 393** 全绿；两个随包 ps1 与三个 harness 侧脚本 **PARSE OK**；
 - v2.2.6：**用户裁决"含全部阶段"**——tag 指向最终 commit，exe 在收尾时按最终代码重建、签名、
   部署到 pc-dsh 启动点（桌面 `小肥鱼控制台.lnk` 指向该文件，无需改 lnk）；
@@ -144,3 +144,12 @@
 - `dshconsole/data/launch-dsh.ps1`：薄壳重写（exact-bin、回退推导、闸、-NoOpen）；
 - `dshconsole/data/switch-dsh-web.ps1`：`-CleanupOnly` 逗号修复史、UAC exit 1、`Start-Dsh` 闸；
 - `dshconsole/__init__.py`、`version_info.txt`、`CHANGELOG.md`、`README.md`：2.2.6 同步。
+
+## DSH 验收记录（2026-11-08）
+
+- 结论：**通过**，无阻断问题。
+- 实测证据：`393 tests OK`；HEAD `acc94e5` = tag `v2.2.6`，已推送、工作区干净；两处 exe（`dist-2.2.6` 与 pc-dsh 部署点）同为 **32,266,240 B**、SHA256 `E2079F0377B04E0E5688B34A0C6DD032E5816C0720E8F6328C434C94495D6A4E`、`Valid`、`2.2.6.0`；Release v2.2.6 资产 `uploaded`；CI run `42395424502` success；桌面 `.lnk` → pc-dsh 那份 exe；3080 单实例 node（pid 41980）运行中、`netsh portproxy show v4tov4` 为空；5 份 ps1 全部 PARSE OK；`build-2.2.6` 的 `Analysis-00.toc` 中 `_tkinter` = 4。
+- 已接受的偏离：桌面不再放独立 exe，只留 `.lnk` 指向部署点——从「两份物理副本」收敛为「单一真源」，SHA 一致，行为等价。
+- 遗留（进 2.2.7）：`version_info.txt` 的 `filevers/prodvers` 仍为 `(2,0,0,0)`（需重建才有意义）；`verify_shots.py` 未纳入 03b/03c；残留芯片真实点击与 UAC 路径未实测；tooltip 未做。
+- 本次验收顺手修正：README 用例数 392 → 393；本文档 commit 数 6 → 7。
+
