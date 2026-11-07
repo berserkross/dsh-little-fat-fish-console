@@ -8,7 +8,9 @@ PID / IP —— PowerShell 一出错，错误信息里的数字就被当成 PID�
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -57,23 +59,63 @@ def _creationflags() -> int:
     return CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
-def execute(argv: list[str], timeout: int, spawn: Spawn | None = None) -> PsResult:
-    """跑一条命令并归一化成 PsResult；任何失败都不抛异常。"""
-    runner = spawn or subprocess.run
+def _read_text(path: str) -> str:
     try:
-        done = runner(
-            argv, capture_output=True, text=True, encoding=ENCODING, errors="replace",
-            stdin=subprocess.DEVNULL, creationflags=_creationflags(), timeout=timeout,
-        )
+        with open(path, encoding=ENCODING, errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+def execute(argv: list[str], timeout: int, spawn: Spawn | None = None) -> PsResult:
+    """跑一条命令并归一化成 PsResult；任何失败都不抛异常。
+
+    stdout/stderr 落到临时文件而不是捕获管道：管道写端会被长命孙进程继承
+    （Start-Process 拉起 DSH 及插件 worker 树），EOF 永远不来，communicate
+    只能干等到超时甚至挂死（阶段 3 验收现场：faulthandler 抓在 communicate）。
+    文件承接只等服务进程退出，不依赖管道 EOF。
+    """
+    if spawn is not None:
+        # 注入的假 runner（测试用）保持管道语义，原样透传。
+        try:
+            done = spawn(
+                argv, capture_output=True, text=True, encoding=ENCODING, errors="replace",
+                stdin=subprocess.DEVNULL, creationflags=_creationflags(), timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return PsResult(False, None, "", "", f"超时：{timeout} 秒内没有返回")
+        except FileNotFoundError:
+            return PsResult(False, None, "", "", f"找不到 {SYSTEM_PS}：系统里没有可用的 PowerShell")
+        except OSError as exc:  # noqa: BLE001 - 启动失败一律归到这里
+            return PsResult(False, None, "", "", f"启动 {SYSTEM_PS} 失败：{exc}")
+        code = getattr(done, "returncode", None)
+        return PsResult(code == 0, code, getattr(done, "stdout", "") or "",
+                        getattr(done, "stderr", "") or "", None)
+
+    tmp = tempfile.mkdtemp(prefix="dsh-psrun-")
+    out_path = os.path.join(tmp, "out.txt")
+    err_path = os.path.join(tmp, "err.txt")
+    stdout = ""
+    stderr = ""
+    code = None
+    try:
+        with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
+            done = subprocess.run(
+                argv, stdout=out_f, stderr=err_f,
+                stdin=subprocess.DEVNULL, creationflags=_creationflags(), timeout=timeout,
+            )
+        code = getattr(done, "returncode", None)
+        stdout = _read_text(out_path)
+        stderr = _read_text(err_path)
     except subprocess.TimeoutExpired:
         return PsResult(False, None, "", "", f"超时：{timeout} 秒内没有返回")
     except FileNotFoundError:
         return PsResult(False, None, "", "", f"找不到 {SYSTEM_PS}：系统里没有可用的 PowerShell")
     except OSError as exc:  # noqa: BLE001 - 启动失败一律归到这里
         return PsResult(False, None, "", "", f"启动 {SYSTEM_PS} 失败：{exc}")
-    code = getattr(done, "returncode", None)
-    return PsResult(code == 0, code, getattr(done, "stdout", "") or "",
-                    getattr(done, "stderr", "") or "", None)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return PsResult(code == 0, code, stdout, stderr, None)
 
 
 def run_ps(script: Path, *args: str, timeout: int = 60, spawn: Spawn | None = None) -> PsResult:

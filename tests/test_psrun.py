@@ -99,5 +99,28 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(kwargs["timeout"], 3)
 
 
+class RealExecutionTests(unittest.TestCase):
+    """真实 PowerShell 的冒烟（全库唯一真跑 ps 的用例）：
+    Start-Process 拉起的孙进程继承捕获管道 → EOF 不来 → communicate 挂死。
+    阶段 3 验收现场（faulthandler 栈转储）抓在这个点；修复后输出走临时文件。"""
+
+    @unittest.skipUnless(os.name == "nt", "只在 Windows 上验证真实 PowerShell 行为")
+    def test_command_spawning_long_lived_grandchild_returns_promptly(self):
+        import tempfile
+        import time
+        out_log = Path(tempfile.mkdtemp(prefix="dsh-psrun-test-")) / "out.log"
+        err_log = out_log.with_name("err.log")
+        start = time.monotonic()
+        # 镜像 _start_direct 的命令形状：Start-Process 拉起一个会活几秒的进程并重定向日志。
+        result = psrun.run_ps_cmd(
+            "Start-Process -FilePath 'ping.exe' -ArgumentList '-n','5','127.0.0.1' "
+            f"-WindowStyle Hidden -RedirectStandardOutput '{out_log}' "
+            f"-RedirectStandardError '{err_log}'",
+            timeout=2)
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 3.0, f"命令应在服务进程退出后立即返回，实际 {elapsed:.1f}s")
+        self.assertTrue(result.ok, result.error or result.text)
+
+
 if __name__ == "__main__":
     unittest.main()
