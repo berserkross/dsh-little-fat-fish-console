@@ -173,12 +173,16 @@ class ServeArgvTests(unittest.TestCase):
         argv = tailscale.serve_argv(3080, scheme="http")
         self.assertEqual(argv[1:4], ["serve", "--bg", "--yes"])
         self.assertIn("--http=80", argv)
-        self.assertEqual(argv[-1], "3080")
+        self.assertEqual(argv[-1], "http://127.0.0.1:3080")
 
     def test_https_mode_is_the_cli_default(self):
         argv = tailscale.serve_argv(3080, scheme="https")
         self.assertNotIn("--http=80", argv)
-        self.assertEqual(argv, ["tailscale.exe", "serve", "--bg", "--yes", "3080"])
+        self.assertEqual(argv, ["tailscale.exe", "serve", "--bg", "--yes", "http://127.0.0.1:3080"])
+
+    def test_target_is_a_full_url_so_the_port_survives_version_changes(self):
+        argv = tailscale.serve_argv(3099, scheme="http")
+        self.assertEqual(argv[-1], "http://127.0.0.1:3099")
 
     def test_yes_is_mandatory_because_the_cli_blocks_on_a_prompt(self):
         for scheme in ("http", "https"):

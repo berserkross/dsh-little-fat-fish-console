@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+## [2.2.7] - 2026-11-11
+
+### 修复
+
+- 免 token 直连（3081）跳转的是一把死 token：旧逻辑只看 `dsh-web.stdout.log` 的
+  修改时间是否「晚于控制台启动」，回答不了「这把 token 现在还认不认」。DSH 被控制台
+  以外的入口重启后，日志不刷新、判断照样通过，手机被重定向到 401。现在每次取 token
+  都当场问 3080 一次（`probe.token_accepted`），不认就不跳转，并在控制台日志里写明
+  「现在跑着的 DSH 不是控制台这次启动的」。
+- 自动直连一次失败就整场放弃：端口被上一次运行的残留监听占住时，三次退避用尽后
+  `_relay_auto_done` 永久置真。改为 5 秒退避持续重试，且 tailnet 地址变化时自动重绑。
+
+### 变更
+
+- `tailscale.serve` 的 target 从裸端口改为 `http://127.0.0.1:<port>`，不再依赖 CLI 的
+  端口简写语法；已在 Tailscale 1.104.5 上核对 `--bg/--http/--yes` 与 `serve status --json`
+  形状未变。
+- `version_info.txt` 的 `filevers/prodvers` 从 (2,0,0,0) 修正为实际版本。
+
 ## [2.2.6] - 2026-11-07
 
 ### 修复

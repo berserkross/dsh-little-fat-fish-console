@@ -2008,27 +2008,35 @@ class ConsoleApp(ctk.CTk):
         """
         if getattr(self, "_relay_auto_done", False):
             return
-        if getattr(self, "_relay", None) is not None:
-            self._relay_auto_done = True
-            return
         ip = getattr(state, "ts_ip", None)
         if not ip:
             return
-        # 上一次运行留下的监听可能还没退干净（换 exe 重启时就是这样），一次失败不该
-        # 让这条开关整场都打不开：给三轮回旋余地，真的还是占着才放弃。
-        tries = getattr(self, "_relay_auto_tries", 0) + 1
-        self._relay_auto_tries = tries
+        current = getattr(self, "_relay", None)
+        if current is not None:
+            if current.host == ip:
+                self._relay_auto_done = True
+                return
+            # tailnet 地址换了（换了网络/重登），旧监听绑的地址已经不算数，重开。
+            current.stop()
+            self._relay = None
+            self._relay_auto_tries = 0
+        # 上一次运行留下的监听可能还没退干净（换 exe 重启时就是这样）：端口占用不是
+        # 永久状态，退避几秒再看，别一次失败就把这条开关整场关死。
+        now = time.time()
+        if now < getattr(self, "_relay_auto_next", 0.0):
+            return
         relay = bridge.Relay(ip, dsh_port=PORT, token_provider=self._relay_token)
         try:
             relay.start()
         except OSError as exc:
-            if tries < 3:
+            tries = getattr(self, "_relay_auto_tries", 0) + 1
+            self._relay_auto_tries = tries
+            self._relay_auto_next = now + 5.0
+            if tries == 1 or tries % 12 == 0:
                 self.logline(f"免 token 直连暂时开不起来：{exc}（{bridge.RELAY_PORT} 被占，稍后自动重试）")
-                return
-            self._relay_auto_done = True
-            self.logline(f"免 token 直连没能自动开启：{exc}（端口 {bridge.RELAY_PORT} 被占）")
             return
         self._relay_auto_done = True
+        self._relay_auto_next = 0.0
         self._relay = relay
         self.logline(f"免 token 直连已自动开启：手机打开 {relay.url}（仅 tailnet；点芯片可关）")
         self.after(0, self._sync_relay_chip)
@@ -2063,12 +2071,22 @@ class ConsoleApp(ctk.CTk):
     def _relay_token(self) -> "str | None":
         """每次请求现取：DSH 重启换 token 后，直连自动跟上，不用重开开关。
 
-        不新鲜就别给：宁可让手机看到「去点重启」那一页，也不要把一把失效的 token 跳过去。
+        日志时间戳只回答「文件是什么时候写的」，不回答「这把 token 还认不认」：DSH 被
+        控制台以外的入口重启时，日志未必刷新。所以不新鲜时当场问 3080 一次，认就放行。
         """
-        if not self._token_is_fresh():
-            return None
         url = token_url()
-        return token_suffix(url) if url else None
+        if not url:
+            return None
+        token = token_suffix(url)
+        if self._token_is_fresh() and probe.token_accepted(PORT, token) is not False:
+            return token
+        if probe.token_accepted(PORT, token):
+            return token
+        if not getattr(self, "_relay_token_warned", False):
+            self._relay_token_warned = True
+            self.log_async("免 token 直连：日志里的 token 已被 3080 拒绝——现在跑着的 DSH 不是"
+                           "控制台这次启动的，点「重启 DSH」让控制台接管后直连才会生效。")
+        return None
 
     def _sync_relay_chip(self) -> None:
         button = getattr(self, "_group_buttons", {}).get("on_toggle_relay")

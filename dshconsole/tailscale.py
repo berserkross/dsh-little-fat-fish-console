@@ -207,7 +207,9 @@ def serve_argv(port: int, *, scheme: str = "http", exe: str = TS_EXE) -> list[st
     argv = [exe, "serve", "--bg", "--yes"]
     if scheme == "http":
         argv.append(f"--http={listen}")
-    argv.append(str(port))
+    # 写成完整 URL 而不是裸端口：端口简写只是 CLI 的便利语法，写成 URL 后行为与
+    # 监听地址都不依赖版本差异。
+    argv.append(f"http://127.0.0.1:{port}")
     return argv
 
 
