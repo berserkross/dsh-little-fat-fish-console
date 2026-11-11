@@ -112,6 +112,41 @@ class StopCleanupTests(unittest.TestCase):
         self.assertTrue(any("查不到" in line for line in app.logged))
 
 
+class JournalFilterTests(unittest.TestCase):
+    """跟随外部日志文件的镜像行不该再抄进 journal：它们本来就躺在 dsh-web.*.log 里。"""
+
+    def _app(self, tmp):
+        app = FakeApp()
+        app.log = mock.MagicMock()
+        for name in ("_trim_log", "_clear_log_selection", "_sync_log_empty",
+                     "_sync_log_rows", "_scroll_log_to_end", "_mirror_log"):
+            setattr(app, name, mock.Mock())
+        return app
+
+    def test_mirrored_lines_not_persisted(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "console.log"
+            app = self._app(tmpdir)
+            with mock.patch.object(dsh_gui.journal, "write",
+                                   lambda text, target=None: jw.append(text)):
+                jw = []
+                dsh_gui.ConsoleApp._append_log(app, ["来自 DSH 的一行"], "[dsh-web.stdout.log] ",
+                                               dsh_gui.MAX_LOG_LINES, False)
+            self.assertEqual(jw, [], "镜像行已落盘，再抄一份只会把面包屑挤掉")
+
+    def test_own_lines_are_persisted(self):
+        app = self._app(None)
+        jw = []
+        with mock.patch.object(dsh_gui.journal, "write",
+                               lambda text, target=None: jw.append(text)):
+            dsh_gui.ConsoleApp._append_log(app, ["重启②：3080 已关闭"])
+        self.assertEqual(len(jw), 1)
+        self.assertIn("重启②", jw[0])
+
+
 class SelfKillGuardTests(unittest.TestCase):
     """_stop()：PID 会被系统回收 —— 永远不许对控制台自己的 PID 动手。"""
 
@@ -290,20 +325,24 @@ class DumpTailsTests(unittest.TestCase):
 
 
 class ProcessPairsTests(unittest.TestCase):
-    """probe._process_pairs：任一命令行读不到就整体判未知，不猜。"""
+    """probe._process_pairs：读不到命令行的进程跳过；一条都读不到才算不知道。
 
-    def test_unreadable_command_line_marks_whole_unknown(self):
+    线上撞到过：Get-CimInstance 在进程创建/退出的瞬间会给出 CommandLine 为空的条目，
+    旧逻辑因此把整份进程表判成「不知道」——状态灯从此停在「未知」，重启入口也拿不到 PID。
+    """
+
+    def test_unreadable_entry_is_skipped_not_fatal(self):
         data = [{"ProcessId": 1, "CommandLine": "node bin.js"},
                 {"ProcessId": 2}]
         pairs, err = probe._process_pairs(data)
-        self.assertIsNone(pairs)
-        self.assertEqual(err, "部分 node 进程命令行不可读取，无法安全判定 DSH 是否运行")
+        self.assertIsNone(err)
+        self.assertEqual(pairs, [(1, "node bin.js")])
 
-    def test_empty_command_line_marks_whole_unknown(self):
+    def test_all_unreadable_still_unknown(self):
         data = [{"ProcessId": 1, "CommandLine": ""}]
         pairs, err = probe._process_pairs(data)
         self.assertIsNone(pairs)
-        self.assertIn("无法安全判定", err)
+        self.assertIn("无法判定", err)
 
 
 class StartGateTests(unittest.TestCase):

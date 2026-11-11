@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -477,7 +478,9 @@ class ConsoleApp(ctk.CTk):
 
     def _on_tail_lines(self, path, lines) -> None:
         """后台线程回调：内容已经脱敏（logtail 里过过 redact_text），这里只投递。"""
-        self._post(self._append_log, lines, f"[{Path(path).name}] ")
+        # persist=False：这些行本来就躺在 dsh-web.*.log 里，再抄一份只会把控制台自己的
+        # 面包屑挤出 1 MB 窗口（实测一分钟就能灌 98 KB 插件噪声）。
+        self._post(self._append_log, lines, f"[{Path(path).name}] ", MAX_LOG_LINES, False)
 
     def _start_tray(self) -> bool:
         if not self._close_to_tray:
@@ -1232,13 +1235,18 @@ class ConsoleApp(ctk.CTk):
         except Exception:  # noqa: BLE001 - 退出路径上窗口可能已经没了
             print(msg, file=sys.stderr)
 
-    def _append_log(self, lines, prefix: str = "", limit: int = MAX_LOG_LINES) -> None:
-        """往日志框追加若干行，超过上限就从顶部丢（滚动丢弃旧行）。"""
+    def _append_log(self, lines, prefix: str = "", limit: int = MAX_LOG_LINES,
+                    persist: bool = True) -> None:
+        """往日志框追加若干行，超过上限就从顶部丢（滚动丢弃旧行）。
+
+        persist=False 用于跟随外部日志文件的镜像行：那份内容已经落盘，不必再抄进 journal。
+        """
         try:
             self.log.configure(state="normal")
             for line in lines:
                 self.log.insert("end", prefix + line + "\n")
-                journal.write(prefix + line)      # 界面会被清空，落盘那份才是事后能查的
+                if persist:
+                    journal.write(prefix + line)  # 界面会被清空，落盘那份才是事后能查的
             self._trim_log(limit)
             self._clear_log_selection()
             self._sync_log_empty(False)
@@ -2454,12 +2462,21 @@ def _running_status(pid: int = 4321) -> "status.Status":
                          lan_ips=["192.168.1.20"], notes=[])
 
 
+def _isolate_selftest_config() -> None:
+    """自检不许往用户真实的配置目录写东西（journal 跟着 DSH_CONSOLE_CONFIG 走）。"""
+    if os.environ.get("DSH_CONSOLE_CONFIG"):
+        return
+    home = Path(tempfile.mkdtemp(prefix="dsh-selftest-"))
+    os.environ["DSH_CONSOLE_CONFIG"] = str(home / "config.json")
+
+
 def selftest() -> int:
     """无窗口交互的自检：状态灯 / 主操作 / 功能网格 / 日志 / 浮层 / 布局。
 
     marker 字段名沿用批次 D 的格式（ring= 现在报的是状态灯的状态词，
     menu_items= 报的是功能网格里的按钮数），只在其后追加新字段。
     """
+    _isolate_selftest_config()
     app = ConsoleApp()
     app._status_provider = _quiet_status      # 自检不依赖本机真实端口与进程
     app._snapshot.invalidate()
@@ -2653,6 +2670,7 @@ def stop_selftest() -> int:
     替身走实例上的 _pids_provider / _status_provider（探测层本来就可注入），
     不再改写模块全局，也绝不碰真实的 DSH 进程。
     """
+    _isolate_selftest_config()
     node = shutil.which("node.exe") or r"D:\Program Files\nodejs\node.exe"
     fake = subprocess.Popen(
         [node, "-e", "setTimeout(()=>{},60000)", "bin.js", "web"],

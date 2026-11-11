@@ -294,6 +294,7 @@ def _process_pairs(data: object) -> tuple[list[tuple[int, str]] | None, str | No
     if not isinstance(data, list):
         return None, "node 进程查询没有返回进程列表"
     processes: list[tuple[int, str]] = []
+    skipped: list[int] = []
     for item in data:
         if not isinstance(item, dict):
             continue
@@ -304,8 +305,14 @@ def _process_pairs(data: object) -> tuple[list[tuple[int, str]] | None, str | No
             continue
         if isinstance(command_line, str) and command_line:
             processes.append((pid, command_line))
+        # 读不到命令行的进程（提权/别的完整性级别）在这一版里跳过，而不是整份答案作废：
+        # 命令行读不到就永远匹配不上 bin.js，把整张表判成「不知道」只会让控制台从此瞎掉
+        # ——状态灯停在「未知」、重启入口也拿不到 PID。「停不掉」比「看不见」安全得多，
+        # 而端口占用会由状态机另行交叉验证。
         else:
-            return None, "部分 node 进程命令行不可读取，无法安全判定 DSH 是否运行"
+            skipped.append(pid)
+    if skipped and not processes:
+        return None, f"{len(skipped)} 个 node 进程的命令行都读不到，无法判定 DSH 是否运行"
     return processes, None
 
 
