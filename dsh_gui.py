@@ -23,9 +23,9 @@ from urllib.parse import urlsplit
 import customtkinter as ctk
 from PIL import Image
 
-from dshconsole import (addresses, adopt, bridge, config, diagnostics, errors, logtail, phone,
-                        probe, psrun, resources, single, snapshot, status, tailscale, tasks,
-                        textutil, tray, ui_theme, widgets)
+from dshconsole import (addresses, adopt, bridge, config, diagnostics, errors, journal, logtail,
+                        phone, probe, psrun, resources, single, snapshot, status, tailscale,
+                        tasks, textutil, tray, ui_theme, widgets)
 from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BADGE_SIZE, BG, BORDER,
                                  BORDER_STRONG, CARD, CARD2, CARD3, CARD_RADIUS, CHIP,
                                  CHIP_HOVER, CHIP_RADIUS, CYAN, DIM, EMPTY_LOG_HINT, FAINT,
@@ -447,6 +447,8 @@ class ConsoleApp(ctk.CTk):
         self.report_callback_exception = self._on_callback_error
         self._build()
         self.logline(f"DSH：{HARNESS or '未检测到'}  ·  端口 {PORT}  ·  node：{CFG.node or '未检测到'}")
+        # 界面上这 2000 行会被滚动丢弃、关窗就没了：同一份内容另存一份文件，事后才查得动。
+        self.logline(f"控制台记录：{journal.path()}")
         self._start_tray()
         self._start_log_tail()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -539,10 +541,14 @@ class ConsoleApp(ctk.CTk):
         try:
             if self.state() == "normal":
                 self.withdraw()
+                hidden = True
             else:
                 self._show_window()
+                hidden = False
         except Exception:      # noqa: BLE001
             return
+        # 窗口「自己消失」与「被收进托盘」在用户眼里是同一件事：留一行时间戳分辨它。
+        self.logline("窗口已收进托盘。" if hidden else "窗口已显示。")
         if self._tray is not None:
             self._tray.update_menu(self._tray_items())
 
@@ -1212,6 +1218,7 @@ class ConsoleApp(ctk.CTk):
         self._sync_log_rows()
         self._scroll_log_to_end()
         self._mirror_log()
+        journal.write(msg)
         self.log.configure(state="disabled")
 
     def log_async(self, msg: str) -> None:
@@ -1231,6 +1238,7 @@ class ConsoleApp(ctk.CTk):
             self.log.configure(state="normal")
             for line in lines:
                 self.log.insert("end", prefix + line + "\n")
+                journal.write(prefix + line)      # 界面会被清空，落盘那份才是事后能查的
             self._trim_log(limit)
             self._clear_log_selection()
             self._sync_log_empty(False)
@@ -1615,7 +1623,7 @@ class ConsoleApp(ctk.CTk):
             self.log_async("重启中止：端口已被占用，但未确认 DSH 进程身份。请先刷新状态或接管实例。")
             return
         if not pids:
-            self.log_async("没有正在运行的 DSH，直接启动。")
+            self.log_async("重启②：没有正在运行的 DSH，直接启动。")
         else:
             listing = "\n".join(f"    PID {pid}" for pid in pids)
             if not self._ask_main(messagebox.askyesno, "重启确认",
@@ -1628,10 +1636,12 @@ class ConsoleApp(ctk.CTk):
                 self.log_async(f"重启中止：{PORT} 仍然被占用，没有再拉起第二份 DSH。"
                                "若占用者是另一处安装，点「改为控制运行中的实例」接管它；"
                                "否则先「关闭 DSH」或手动结束占用进程。")
+                self._dump_tails()
                 self.refresh(force=True)
                 return
+            self.log_async(f"重启②：{PORT} 已关闭，开始拉起新的 DSH。")
         self._start(force=True)
-        if self._wait_port(True, 25.0):
+        if self._wait_started(30.0):
             left, _err = self._pids_provider()
             if not left:
                 self.log_async("重启尚未验证：端口在线，但无法确认本机 DSH 进程。")
@@ -1640,7 +1650,8 @@ class ConsoleApp(ctk.CTk):
             shown = "、".join(str(pid) for pid in left)
             self.log_async(f"重启完成：{PORT} 已在线（PID {shown}）。")
         else:
-            self.log_async(f"重启未完成：{PORT} 在 25 秒内没有恢复监听，原因见上方启动输出。")
+            self.log_async(f"重启未完成：{PORT} 在 30 秒内没有恢复监听，原因见上方启动输出。")
+            self._dump_tails()
         self.refresh(force=True)
 
     def on_phone_access(self) -> None:
@@ -1870,8 +1881,9 @@ class ConsoleApp(ctk.CTk):
                 if not r.ok:
                     detail = ((r.why() or "") + " " + (r.stderr or "").strip()[-300:]).strip()
                     self.log_async(f"启动脚本返回失败：{detail or '没有更详细的输出'}")
-            if not self._wait_port(True, 20.0):
-                self.log_async("启动失败：端口 20 秒内没有起来，请查看 dsh-web.stderr.log。")
+            if not self._wait_started(60.0):
+                self.log_async(f"启动失败：{PORT} 在 60 秒内没有起来。")
+                self._dump_tails()
                 return
             started_pids, started_err = self._pids_provider()
             if not started_pids:
@@ -1908,6 +1920,44 @@ class ConsoleApp(ctk.CTk):
         self.log_async(f"直接启动失败：{result.why() or result.text.strip()[:200]}")
         return False
 
+    def _dump_tails(self) -> None:
+        """启动失败时把两份真实日志的尾巴贴进界面。
+
+        「请查看 dsh-web.stderr.log」等于没给线索：用户不知道路径、也不会去看。
+        这里只贴末尾几行，足够看出是 EADDRINUSE、参数错还是插件起不来。
+        """
+        shown = 0
+        for source, label in ((CFG.stderr_log, "stderr"), (TOKEN_LOG, "stdout")):
+            rows = journal.tail_lines(source)
+            if not rows:
+                continue
+            shown += 1
+            self.log_async(f"—— {label} 最后 {len(rows)} 行 ——")
+            for row in rows:
+                self.log_async(row)
+        if not shown:
+            self.log_async("两份启动日志都没有内容：进程可能根本没被拉起（见上一条失败原因）。")
+
+    def _wait_started(self, timeout: float, note_every: float = 10.0) -> bool:
+        """等端口起来，每 note_every 秒报一次进度。
+
+        原来一律死等 20 秒然后说「没起来」：冷启动 + 插件加载偶尔要 30 秒，
+        于是控制台宣布失败、用户以为「只关了没起」。这里把等待拉长并把进度说出来。
+        """
+        deadline = time.time() + timeout
+        note_at = time.time() + note_every
+        while True:
+            if self._port_open():
+                return True
+            now = time.time()
+            if now >= deadline:
+                return False
+            if now >= note_at:
+                note_at = now + note_every
+                self.log_async(f"仍在等待 {PORT} 起来（已等 {int(timeout - (deadline - now))} 秒，"
+                               f"最多 {int(timeout)} 秒）…")
+            time.sleep(0.4)
+
     def on_stop(self) -> None:
         """先查出将被结束的 PID 让用户确认，再动手；不确定就一个都不杀。"""
         self._submit("停止 DeepSeek Harness", self._stop_prepare)
@@ -1936,7 +1986,12 @@ class ConsoleApp(ctk.CTk):
         self._stop(pids)
 
     def _stop(self, pids: list[int]) -> None:
+        me = os.getpid()
         for pid in pids:
+            # PID 会被系统回收：杀掉自己就等于「点重启把窗口也关了」，这条线一圈都不许越过。
+            if int(pid) == me:
+                self.log_async(f"跳过 PID {pid}：那是控制台自己。")
+                continue
             result = psrun.run_ps_cmd(
                 f"Stop-Process -Id {int(pid)} -Force -ErrorAction Stop; 'stopped'")
             if result.ok and "stopped" in result.stdout:
