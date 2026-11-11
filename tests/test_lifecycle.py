@@ -147,6 +147,23 @@ class JournalFilterTests(unittest.TestCase):
         self.assertIn("重启②", jw[0])
 
 
+class QuitJournalTests(unittest.TestCase):
+    """_quit 必须留一行「正在退出」：没有这行才说明进程是被硬杀的。"""
+
+    def test_quit_writes_exit_line(self):
+        app = FakeApp()
+        for name in ("_close_overlays", "destroy"):
+            setattr(app, name, mock.Mock())
+        app._tail = None
+        app._relay = None
+        app._tray = None
+        logged = []
+        with mock.patch.object(dsh_gui.journal, "write",
+                               lambda text, target=None: logged.append(text)):
+            dsh_gui.ConsoleApp._quit(app)
+        self.assertTrue(any("正在退出" in text for text in logged), logged)
+
+
 class SelfKillGuardTests(unittest.TestCase):
     """_stop()：PID 会被系统回收 —— 永远不许对控制台自己的 PID 动手。"""
 

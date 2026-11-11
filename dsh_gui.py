@@ -645,6 +645,8 @@ class ConsoleApp(ctk.CTk):
 
     def _quit(self) -> None:
         """真退出：先停后台线程（日志跟随、托盘），再销毁窗口。"""
+        # 落一行再走：有这一行=自己退的（用户点了✕/托盘退出），没这一行=进程被硬杀。
+        journal.write("控制台正在退出（窗口关闭或托盘退出）。")
         self._close_overlays()
         tail, self._tail = self._tail, None
         if tail is not None:
