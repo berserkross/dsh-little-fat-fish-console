@@ -345,3 +345,42 @@ class CopyAndSwitchTests(unittest.TestCase):
         self.assertEqual(app.reset_calls, 1)
         self.assertIn("tailscale serve reset 失败。", "".join(app.logged))
         self.assertIn("-Restore", app.switch_calls[0][0])
+
+class RelayChipTests(unittest.TestCase):
+    """3081 被占时芯片必须看得出来，不能停在「关」上让人以为是自己关的。"""
+
+    class _Button:
+        def __init__(self):
+            self.text = None
+            self.border = None
+
+        def configure(self, **kw):
+            if "text" in kw:
+                self.text = kw["text"]
+            if "border_color" in kw:
+                self.border = kw["border_color"]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.gui = load_gui()
+
+    def _chip(self, relay=None, err=None):
+        stub = SimpleNamespace(_group_buttons={"on_toggle_relay": self._Button()},
+                               _relay=relay, _relay_err=err)
+        self.gui.ConsoleApp._sync_relay_chip(stub)
+        return stub._group_buttons["on_toggle_relay"]
+
+    def test_idle_chip_says_off(self):
+        chip = self._chip()
+        self.assertTrue(chip.text.endswith("：关"), chip.text)
+        self.assertEqual(chip.border, self.gui.BORDER)
+
+    def test_running_chip_says_on(self):
+        chip = self._chip(relay=SimpleNamespace(running=True))
+        self.assertTrue(chip.text.endswith("：开"), chip.text)
+        self.assertEqual(chip.border, self.gui.AMBER)
+
+    def test_occupied_port_is_not_reported_as_off(self):
+        chip = self._chip(err="3081 被占：只有一次机会")
+        self.assertIn("端口被占", chip.text)
+        self.assertEqual(chip.border, self.gui.RED)

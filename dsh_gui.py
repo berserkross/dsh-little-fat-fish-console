@@ -2052,11 +2052,17 @@ class ConsoleApp(ctk.CTk):
             tries = getattr(self, "_relay_auto_tries", 0) + 1
             self._relay_auto_tries = tries
             self._relay_auto_next = now + 5.0
+            self._relay_err = f"{bridge.RELAY_PORT} 被占：{exc}"
             if tries == 1 or tries % 12 == 0:
-                self.logline(f"免 token 直连暂时开不起来：{exc}（{bridge.RELAY_PORT} 被占，稍后自动重试）")
+                self.logline(f"免 token 直连暂时开不起来：{exc}"
+                             f"（{bridge.RELAY_PORT} 被占，5 秒后自动重试；"
+                             f"若一直占着，多半是上一次没退干净的控制台，"
+                             f"用 netstat -ano | findstr :{bridge.RELAY_PORT} 看是谁）")
+            self.after(0, self._sync_relay_chip)
             return
         self._relay_auto_done = True
         self._relay_auto_next = 0.0
+        self._relay_err = None
         self._relay = relay
         self.logline(f"免 token 直连已自动开启：手机打开 {relay.url}（仅 tailnet；点芯片可关）")
         self.after(0, self._sync_relay_chip)
@@ -2082,8 +2088,13 @@ class ConsoleApp(ctk.CTk):
             try:
                 relay.start()
             except OSError as exc:
-                self.log_async(f"免 token 直连起不来：{exc}（端口 {bridge.RELAY_PORT} 被占？先关掉再试）")
+                self._relay_err = f"{bridge.RELAY_PORT} 被占：{exc}"
+                self.log_async(f"免 token 直连起不来：{exc}（端口 {bridge.RELAY_PORT} 被占。"
+                               f"先看是谁占着：netstat -ano | findstr :{bridge.RELAY_PORT}；"
+                               f"确认是残留的控制台就结束它，再点一次这颗按钮）")
+                self.after(0, self._sync_relay_chip)
                 return
+            self._relay_err = None
             self._relay = relay
             self.log_async(f"免 token 直连已开启：手机打开 {relay.url} —— 只对 tailnet 成员开放，"
                            "它会把请求转成一把带 token 的地址，之后 :3080 也能直接开。")
@@ -2129,9 +2140,16 @@ class ConsoleApp(ctk.CTk):
             return
         relay = getattr(self, "_relay", None)
         running = bool(relay is not None and relay.running)
+        # 端口被占和「用户自己关掉了」是两件事：前者手机连不上、需要人去处理，
+        # 芯片必须看得出来，否则症状就是「开关看着是关的，其实一直没开成」。
+        if running:
+            text, border = "⇥  免 token 直连：开", AMBER
+        elif getattr(self, "_relay_err", None):
+            text, border = "⇥  免 token 直连：端口被占", RED
+        else:
+            text, border = "⇥  免 token 直连：关", BORDER
         try:
-            button.configure(text=("⇥  免 token 直连：开" if running else "⇥  免 token 直连：关"),
-                             border_color=(AMBER if running else BORDER))
+            button.configure(text=text, border_color=border)
         except Exception:      # noqa: BLE001 - 控件替身/已销毁
             pass
 
