@@ -249,6 +249,11 @@ class TokenAcceptedTests(unittest.TestCase):
             raise urllib.error.HTTPError("http://x/", 401, "no", {}, None)
         self.assertFalse(probe.token_accepted(3080, "tok", opener=opener))
 
+    def test_redirect_303_means_accepted(self):
+        def opener(*_a, **_k):
+            raise urllib.error.HTTPError("http://x/", 303, "see other", {}, None)
+        self.assertTrue(probe.token_accepted(3080, "tok", opener=opener))
+
     def test_unreachable_is_unknown(self):
         def opener(*_a, **_k):
             raise urllib.error.URLError("down")
@@ -258,6 +263,62 @@ class TokenAcceptedTests(unittest.TestCase):
         called = []
         self.assertFalse(probe.token_accepted(3080, "", opener=lambda *a, **k: called.append(1)))
         self.assertEqual(called, [])
+
+    def test_token_is_url_encoded_so_plus_survives(self):
+        seen = []
+
+        class _Ok:
+            status = 200
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+
+        def opener(url, **_k):
+            seen.append(url)
+            return _Ok()
+
+        self.assertTrue(probe.token_accepted(3080, "a+b/c=d", opener=opener))
+        self.assertEqual(seen, ["http://127.0.0.1:3080/?token=a%2Bb%2Fc%3Dd"])
+
+
+class TokenUrlTests(unittest.TestCase):
+    """日志里那把 token 必须原样抠出来：截断会让 3081 永远跳一把死钥匙。"""
+
+    def test_plus_and_suffix_are_kept(self):
+        import tempfile
+        from pathlib import Path
+        import dsh_gui
+
+        token = "QrNMuqcwVXIliFSE2fA5-AlBU9eDgiJpstt4ior9pm4"
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "dsh-web.stdout.log"
+            log.write_text(
+                f"dsh web: http://127.0.0.1:{dsh_gui.PORT}/?token={token}\n", encoding="utf-8")
+            original = dsh_gui.TOKEN_LOG
+            dsh_gui.TOKEN_LOG = log
+            try:
+                self.assertEqual(dsh_gui.token_url(),
+                                 f"http://127.0.0.1:{dsh_gui.PORT}/?token={token}")
+            finally:
+                dsh_gui.TOKEN_LOG = original
+
+    def test_token_with_plus_sign_is_not_truncated(self):
+        import tempfile
+        from pathlib import Path
+        import dsh_gui
+
+        token = "abc+def/ghi=123"
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "dsh-web.stdout.log"
+            log.write_text(
+                f"dsh web: http://127.0.0.1:{dsh_gui.PORT}/?token={token}\n", encoding="utf-8")
+            original = dsh_gui.TOKEN_LOG
+            dsh_gui.TOKEN_LOG = log
+            try:
+                self.assertEqual(dsh_gui.token_suffix(dsh_gui.token_url() or ""), token)
+            finally:
+                dsh_gui.TOKEN_LOG = original
 
 
 if __name__ == "__main__":

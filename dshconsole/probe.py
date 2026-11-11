@@ -12,6 +12,7 @@ import re
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -51,6 +52,17 @@ def port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.4) -> bool:
 TOKEN_PROBE_TIMEOUT = 2.0
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """303 就是「token 认了、去换 cookie」——跟过去只会落到 401 的登录页。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):   # noqa: D401
+        return None
+
+
+def _default_opener():
+    return urllib.request.build_opener(_NoRedirect())
+
+
 def token_accepted(port: int, token: str, host: str = "127.0.0.1",
                    timeout: float = TOKEN_PROBE_TIMEOUT, opener=None) -> bool | None:
     """拿 token 去问一次正在运行的 DSH：True=认，False=不认（401），None=问不到。
@@ -61,13 +73,18 @@ def token_accepted(port: int, token: str, host: str = "127.0.0.1",
     """
     if not token:
         return False
-    url = f"http://{host}:{int(port)}/?token={token}"
-    open_url = opener or urllib.request.urlopen
+    # token 必须编码：未编码的 + 会被服务端解成空格，探测就会得到 401/异常，
+    # 让人误以为「token 失效」。
+    url = f"http://{host}:{int(port)}/?token={urllib.parse.quote(token, safe='')}"
+    open_url = opener or _default_opener().open
     try:
         with open_url(url, timeout=timeout) as response:
             return 200 <= int(getattr(response, "status", 200) or 200) < 400
     except urllib.error.HTTPError as exc:
-        return False if int(getattr(exc, "code", 0) or 0) == 401 else None
+        code = int(getattr(exc, "code", 0) or 0)
+        if 200 <= code < 400:        # 不跟随重定向时，303 会以 HTTPError 的形式出现
+            return True
+        return False if code == 401 else None
     except (urllib.error.URLError, OSError, ValueError):
         return None
 

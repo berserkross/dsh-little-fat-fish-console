@@ -156,5 +156,19 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class RelayTargetProviderTests(unittest.TestCase):
+    def test_target_provider_redirects_to_reachable_address(self):
+        port = free_port()
+        relay = bridge.Relay("127.0.0.1", port=port, token_provider=lambda: "tok",
+                             target_provider=lambda tok: f"http://phone.test/?token={tok}")
+        relay.start()
+        self.addCleanup(relay.stop)
+        opener = urllib.request.build_opener(_NoRedirect())
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            opener.open(relay.url, timeout=5)
+        self.assertEqual(ctx.exception.code, 302)
+        self.assertEqual(ctx.exception.headers.get("Location"), "http://phone.test/?token=tok")
+
+
 if __name__ == "__main__":
     unittest.main()

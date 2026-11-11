@@ -259,7 +259,9 @@ def token_url() -> str | None:
         text = TOKEN_LOG.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    m = re.search(rf"dsh web: (http://127\.0\.0\.1:{PORT}/\?token=[A-Za-z0-9_\-]+)", text)
+    # token 里会出现 + / = 之类的字符，字符类必须放开：早先的 [A-Za-z0-9_\-]+ 会把
+    # 真 token 截断，3081 于是永远跳一把残缺的钥匙（实测过，表现为每次重启都 401）。
+    m = re.search(rf"dsh web: (http://127\.0\.0\.1:{PORT}/\?token=[^\s\"'<>]+)", text)
     return m.group(1) if m else None
 
 
@@ -322,6 +324,23 @@ def phone_candidate_url(cand, token: "str | None") -> "str | None":
         return cand.url
     sep = "&" if "?" in cand.url else "?"
     return f"{cand.url}{sep}token={token_suffix(token)}"
+
+
+def relay_target_url(plan_obj, token: "str | None") -> "str | None":
+    """免 token 直连该把手机送到哪：serve 域名优先，其后任何手机真能打开的候选。
+
+    为什么不让请求方自己按顺序挑：3080 默认只监听 127.0.0.1，tailnet IP 那条候选项看着
+    「可达」，手机点上去却是连不上——serve 模式才是那条真的能进门的地址。
+    """
+    if plan_obj is None:
+        return None
+    rows = [cand for _text, cand in phone_rows(plan_obj)]
+    serve = [cand for cand in rows if getattr(cand, "tier", None) == addresses.TIER_SERVE]
+    for cand in serve + [cand for cand in rows if cand not in serve]:
+        url = phone_candidate_url(cand, token)
+        if url:
+            return url
+    return None
 
 
 def phone_reason_text(plan_obj) -> str:
@@ -2025,7 +2044,8 @@ class ConsoleApp(ctk.CTk):
         now = time.time()
         if now < getattr(self, "_relay_auto_next", 0.0):
             return
-        relay = bridge.Relay(ip, dsh_port=PORT, token_provider=self._relay_token)
+        relay = bridge.Relay(ip, dsh_port=PORT, token_provider=self._relay_token,
+                              target_provider=self._relay_target)
         try:
             relay.start()
         except OSError as exc:
@@ -2057,7 +2077,8 @@ class ConsoleApp(ctk.CTk):
             if not ip:
                 self.log_async("没探测到 Tailscale IP：先点「刷新状态」，再开直连。")
                 return
-            relay = bridge.Relay(ip, dsh_port=PORT, token_provider=self._relay_token)
+            relay = bridge.Relay(ip, dsh_port=PORT, token_provider=self._relay_token,
+                              target_provider=self._relay_target)
             try:
                 relay.start()
             except OSError as exc:
@@ -2087,6 +2108,20 @@ class ConsoleApp(ctk.CTk):
             self.log_async("免 token 直连：日志里的 token 已被 3080 拒绝——现在跑着的 DSH 不是"
                            "控制台这次启动的，点「重启 DSH」让控制台接管后直连才会生效。")
         return None
+
+    def _relay_target(self, token: str) -> "str | None":
+        """手机该被送到哪个地址：serve 的域名优先，其次任何它真能打开的候选。
+
+        缓存按 token 归零：DSH 每次重启换 token，旧地址带的是旧 token，必须重算；
+        一时找不到地址只缓存 10 秒，免得把探测（tailscale 子进程）按请求打满。
+        """
+        cached = getattr(self, "_relay_target_cache", None)
+        if cached and cached[0] == token and (cached[1] or time.monotonic() - cached[2] < 10.0):
+            return cached[1]
+        plan_obj = getattr(self, "_phone_now", None) or self._phone_plan_for_ui()
+        url = relay_target_url(plan_obj, token)
+        self._relay_target_cache = (token, url, time.monotonic())
+        return url
 
     def _sync_relay_chip(self) -> None:
         button = getattr(self, "_group_buttons", {}).get("on_toggle_relay")

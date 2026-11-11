@@ -94,6 +94,21 @@ class PhoneViewTests(unittest.TestCase):
         plan_obj = fake_plan(tailscale_candidate())
         self.assertIsNone(self.gui.phone_candidate(plan_obj, "（别的什么东西）"))
 
+    def test_relay_prefers_serve_over_tailnet_ip(self):
+        """3080 只监听回环时，100.x:3080 那条是死路，serve 域名才是能进门的地址。"""
+        plan_obj = fake_plan(tailscale_candidate(), serve_candidate())
+        self.assertEqual(self.gui.relay_target_url(plan_obj, "abc123"),
+                         "http://" + SERVE_HOST + "/?token=abc123")
+
+    def test_relay_falls_back_when_no_serve(self):
+        plan_obj = fake_plan(tailscale_candidate())
+        self.assertEqual(self.gui.relay_target_url(plan_obj, "abc123"),
+                         "http://100.101.102.103:3080/?token=abc123")
+
+    def test_relay_has_no_target_without_phone_reachable_candidate(self):
+        self.assertIsNone(self.gui.relay_target_url(fake_plan(loopback_candidate()), "abc123"))
+        self.assertIsNone(self.gui.relay_target_url(None, "abc123"))
+
     def test_existing_token_is_not_duplicated(self):
         cand = tailscale_candidate()
         with_token = addresses.Candidate(host=cand.host, tier=cand.tier, label=cand.label,

@@ -88,6 +88,16 @@ class _Handler(BaseHTTPRequestHandler):
             if body:
                 self.wfile.write(payload)
             return
+        provider = getattr(self.server, "target_provider", None)
+        direct = provider(token) if provider else None
+        if direct:
+            # 把手机直接送到「它真能打开、且 Host 与 cookie 对得上」的地址去；token 由 DSH 自己换。
+            self.send_response(302)
+            self.send_header("Location", direct)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         requested = self.headers.get("Host") or self.server.default_authority   # type: ignore[attr-defined]
         authority = target_authority(requested, self.server.dsh_port)           # type: ignore[attr-defined]
         cookie = self.server.mint(authority, token)     # type: ignore[attr-defined]
@@ -117,7 +127,8 @@ class Relay:
 
     def __init__(self, host: str, port: int = RELAY_PORT, dsh_port: int = 3080,
                  token_provider: Callable[[], str | None] | None = None,
-                 server_factory=None, mint=None):
+                 server_factory=None, mint=None,
+                 target_provider: Callable[[str], str | None] | None = None):
         self.host = host
         self.port = int(port)
         self.dsh_port = int(dsh_port)
@@ -125,6 +136,9 @@ class Relay:
         self._factory = server_factory or _Server
         # 换 cookie 这一步可以注入：测试不该真去连本机 3080 上的 DSH。
         self._mint = mint or (lambda authority, tok: mint_cookie(authority, tok, self.dsh_port))
+        # 手机该被送到哪个地址：serve 的域名、能直连的 IP 都行，由调用方按当前网络算。
+        # 给了就用它（地址里带 token，DSH 自己种 cookie），没给才回退到旧的换 cookie 逻辑。
+        self._target_provider = target_provider
         self._server = None
         self._thread = None
 
@@ -146,6 +160,7 @@ class Relay:
         httpd.dsh_port = self.dsh_port                    # type: ignore[attr-defined]
         httpd.default_authority = f"{self.host}:{self.dsh_port}"  # type: ignore[attr-defined]
         httpd.mint = self._mint                          # type: ignore[attr-defined]
+        httpd.target_provider = self._target_provider    # type: ignore[attr-defined]
         self._server = httpd
         self._thread = threading.Thread(target=httpd.serve_forever, name="dsh-relay", daemon=True)
         self._thread.start()
