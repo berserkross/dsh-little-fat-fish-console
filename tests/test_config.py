@@ -167,6 +167,44 @@ class HermeticDetection(HermeticBase):
         self.assertEqual(config.resolve_port(None, None), config.DEFAULT_PORT)
 
 
+class PreferenceTests(HermeticBase):
+    """用户偏好（关闭行为、免 token 自动开）与探测结果分开存：重写探测结果不能抹掉它们。"""
+
+    def _cfg(self) -> config.DshConfig:
+        harness = make_harness(self.tmp)
+        return config.DshConfig(harness=harness, node=None,
+                                bin_js=harness / config.BIN_JS_REL, dsh_home=None, port=3099)
+
+    def test_defaults_without_any_file(self) -> None:
+        target = self.tmp / "config.json"
+        self.assertTrue(config.close_to_tray(path=target))
+        self.assertTrue(config.auto_relay(path=target))
+        self.assertFalse(target.exists())      # 只读不建文件
+
+    def test_setters_persist_and_keep_other_keys(self) -> None:
+        target = self.tmp / "config.json"
+        target.write_text(json.dumps({"port": 3099, "harness": "x"}), encoding="utf-8")
+        config.set_auto_relay(False, target)
+        config.set_close_to_tray(False, target)
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(raw["port"], 3099)
+        self.assertEqual(raw["harness"], "x")
+        self.assertFalse(raw[config.AUTO_RELAY])
+        self.assertFalse(raw[config.CLOSE_TO_TRAY])
+        self.assertFalse(config.auto_relay(path=target))
+        self.assertFalse(config.close_to_tray(path=target))
+
+    def test_save_keeps_both_preferences(self) -> None:
+        target = self.tmp / "config.json"
+        config.set_auto_relay(False, target)
+        config.set_close_to_tray(False, target)
+        config.save(self._cfg(), target)
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(raw["port"], 3099)
+        self.assertFalse(raw[config.AUTO_RELAY])
+        self.assertFalse(raw[config.CLOSE_TO_TRAY])
+
+
 class CliParsing(HermeticBase):
     """--harness / --port 必须真的进到 resolve，而不只是写在文档里。"""
 

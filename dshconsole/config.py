@@ -24,6 +24,8 @@ BIN_JS_REL = Path("node_modules") / "@deepseek-ai" / "dsh" / "lib" / "bin.js"
 TOKEN_LOG_NAME = "dsh-web.stdout.log"
 STDERR_LOG_NAME = "dsh-web.stderr.log"
 CLOSE_TO_TRAY = "close_to_tray"     # 关闭按钮的行为：True=收进托盘，False=直接退出
+AUTO_RELAY = "auto_relay"           # 看到 tailnet 地址就自动开免 token 直连：True=开
+USER_PREFS = (CLOSE_TO_TRAY, AUTO_RELAY)   # 用户设置：重写探测结果时必须原样带过去
 
 
 def _is_dir(value: object) -> bool:
@@ -304,24 +306,43 @@ def save(cfg: "DshConfig", path: str | Path | None = None) -> Path:
     if source:
         data["source"] = str(source)
     # 用户设置在探测结果之外，重写探测结果时不能顺手把它抹掉。
-    keep = _read_raw(target).get(CLOSE_TO_TRAY)
-    if isinstance(keep, bool):
-        data[CLOSE_TO_TRAY] = keep
+    old = _read_raw(target)
+    for key in USER_PREFS:
+        if isinstance(old.get(key), bool):
+            data[key] = old[key]
+    return _write_raw(data, target)
+
+
+def _bool_pref(key: str, default: bool, path: str | Path | None) -> bool:
+    value = _read_raw(path).get(key)
+    return value if isinstance(value, bool) else bool(default)
+
+
+def _set_bool_pref(key: str, value: bool, path: str | Path | None) -> Path:
+    target = Path(path) if path else config_path()
+    data = _read_raw(target)
+    data[key] = bool(value)
     return _write_raw(data, target)
 
 
 def close_to_tray(default: bool = True, path: str | Path | None = None) -> bool:
     """关闭按钮是否收进托盘。没记录过就用 default（首次启动按默认走，不写盘）。"""
-    value = _read_raw(path).get(CLOSE_TO_TRAY)
-    return value if isinstance(value, bool) else bool(default)
+    return _bool_pref(CLOSE_TO_TRAY, default, path)
 
 
 def set_close_to_tray(value: bool, path: str | Path | None = None) -> Path:
     """只改这一项，保留 config.json 里其余的键（探测结果与端口都不动）。"""
-    target = Path(path) if path else config_path()
-    data = _read_raw(target)
-    data[CLOSE_TO_TRAY] = bool(value)
-    return _write_raw(data, target)
+    return _set_bool_pref(CLOSE_TO_TRAY, value, path)
+
+
+def auto_relay(default: bool = True, path: str | Path | None = None) -> bool:
+    """看到 tailnet 地址时是否自动开免 token 直连。没记录过就用 default。"""
+    return _bool_pref(AUTO_RELAY, default, path)
+
+
+def set_auto_relay(value: bool, path: str | Path | None = None) -> Path:
+    """只改这一项，保留 config.json 里其余的键。"""
+    return _set_bool_pref(AUTO_RELAY, value, path)
 
 
 # ---------------- 汇总 ----------------

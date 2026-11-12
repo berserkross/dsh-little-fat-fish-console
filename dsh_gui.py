@@ -122,6 +122,7 @@ ACTION_GROUPS: tuple = (
     ("工具", (
         ("⤓", "导出诊断包", "on_export_diag"),
         ("⏸", "暂停日志跟随", "on_toggle_log_follow"),
+        ("⇢", "免 token 自动开：开", "on_toggle_auto_relay"),
         ("✕", "关闭窗口时：收进托盘", "on_toggle_close_mode"),
         ("⊗", "取消排队", "on_cancel_queue"),
         ("⏻", "退出程序", "_quit"),
@@ -457,6 +458,7 @@ class ConsoleApp(ctk.CTk):
         self._tray: tray.Tray | None = None
         self._tail: logtail.LogTailer | None = None
         self._close_to_tray = config.close_to_tray()
+        self._auto_relay = config.auto_relay()
         self.report_callback_exception = self._on_callback_error
         self._build()
         self.logline(f"DSH：{HARNESS or '未检测到'}  ·  端口 {PORT}  ·  node：{CFG.node or '未检测到'}")
@@ -593,11 +595,14 @@ class ConsoleApp(ctk.CTk):
         self._sync_group_labels()
 
     def _sync_group_labels(self) -> None:
-        """两颗带状态的开关按钮，文案对齐当前状态（网格里只有它们会变）。"""
+        """三颗带状态的开关按钮，文案对齐当前状态（网格里只有它们会变）。"""
         buttons = getattr(self, "_group_buttons", None) or {}
         pairs = (
             ("on_toggle_log_follow",
              "暂停日志跟随" if self._log_follow else "恢复日志跟随"),
+            ("on_toggle_auto_relay",
+             "免 token 自动开：开" if getattr(self, "_auto_relay", True)
+             else "免 token 自动开：关"),
             ("on_toggle_close_mode",
              "关闭窗口时：收进托盘" if self._close_to_tray else "关闭窗口时：退出程序"),
         )
@@ -628,6 +633,22 @@ class ConsoleApp(ctk.CTk):
                 self._tray = None
             self.logline("关闭按钮＝退出程序。")
         self._sync_close_hint()
+
+    def on_toggle_auto_relay(self) -> None:
+        """免 token 直连是否「看到 tailnet 地址就自动开」，写回 config.json。"""
+        want = not getattr(self, "_auto_relay", True)
+        self._auto_relay = want
+        try:
+            config.set_auto_relay(want)
+        except Exception as exc:      # noqa: BLE001 - 写不进去也要让本次生效
+            self.logline(f"自动直连设置没能写进 config.json：{exc}（本次仍然生效）")
+        if want:
+            # 刚打开：允许下一次刷新再自动开一次（已经开着的话下面会认出来）。
+            self._relay_auto_done = False
+            self.logline("免 token 直连：刷新到 tailnet 地址就自动开启。")
+        else:
+            self.logline("免 token 直连：不再自动开启（「免 token 直连」芯片仍可手动开）。")
+        self._sync_group_labels()
 
     def _close_overlays(self) -> None:
         """收起浮层，并释放二维码的内存引用（不产生任何文件）。"""
@@ -2161,6 +2182,8 @@ class ConsoleApp(ctk.CTk):
 
         只自动开一次：用户手动关掉之后不再偷偷打开 —— 那会让人怀疑开关是假的。
         """
+        if not getattr(self, "_auto_relay", True):
+            return
         if getattr(self, "_relay_auto_done", False):
             return
         ip = getattr(state, "ts_ip", None)

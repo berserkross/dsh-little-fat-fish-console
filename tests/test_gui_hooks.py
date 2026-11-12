@@ -381,6 +381,51 @@ class ResidueChipTests(unittest.TestCase):
         self.assertTrue(any("端口转发残留清理失败" in line for line in app.logged))
 
 
+class AutoRelayToggleTests(unittest.TestCase):
+    """「免 token 自动开」是用户偏好：关掉之后不再偷偷开，切换要写回 config.json。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def _app(self):
+        app = FakeApp()
+        app._auto_relay = True
+        synced = []
+        app._sync_group_labels = lambda: synced.append(True)
+        return app, synced
+
+    def _state(self, ip="100.124.206.105"):
+        return status.Status(phase=status.Phase.RUNNING, pids=[1], port_open=True,
+                             phone_open=False, ts_ip=ip, lan_ips=None, notes=[])
+
+    def test_toggle_flips_the_preference_and_writes_it(self):
+        app, synced = self._app()
+        written = []
+        with mock.patch.object(dsh_gui.config, "set_auto_relay", written.append):
+            self.app_cls.on_toggle_auto_relay(app)
+        self.assertFalse(app._auto_relay)
+        self.assertEqual(written, [False])
+        self.assertEqual(len(synced), 1)
+        self.assertTrue(any("不再自动开启" in line for line in app.logged))
+
+    def test_turning_it_back_on_arms_one_more_auto_start(self):
+        app, _ = self._app()
+        app._auto_relay = False
+        app._relay_auto_done = True
+        with mock.patch.object(dsh_gui.config, "set_auto_relay", lambda value: None):
+            self.app_cls.on_toggle_auto_relay(app)
+        self.assertTrue(app._auto_relay)
+        self.assertFalse(app._relay_auto_done)
+
+    def test_disabled_preference_skips_the_auto_start(self):
+        app, _ = self._app()
+        app._auto_relay = False
+        built = []
+        with mock.patch.object(dsh_gui.bridge, "Relay", lambda *a, **kw: built.append(a)):
+            self.app_cls._maybe_auto_relay(app, self._state())
+        self.assertEqual(built, [])
+        self.assertEqual(app.logged, [])
+
+
 class StartupLineTests(unittest.TestCase):
     """阶段 4：启动中状态条显示已用秒数 + 最近一行启动日志；完成后停留 2 秒再回正常。"""
 
