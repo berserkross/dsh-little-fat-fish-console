@@ -44,6 +44,11 @@ class FakeApp:
     def _cleanup_residue(self):
         dsh_gui.ConsoleApp._cleanup_residue(self)
 
+    def _record_children(self, pids):
+        """默认不落盘：真账本写进配置目录，测试不该在那里留东西。"""
+        self.recorded = getattr(self, "recorded", [])
+        self.recorded.append(list(pids))
+
     def _port_owner_text(self):
         return "占用者未知"
 
@@ -393,6 +398,141 @@ class StartGateTests(unittest.TestCase):
              mock.patch.object(dsh_gui.time, "sleep", lambda _s: None):
             self.app_cls._start(app)
         self.assertTrue(any("启动完成" in line for line in app.logged))
+
+
+
+class LedgerWiringTests(unittest.TestCase):
+    """A1：启动记账、停止划账、退出标遗留 —— 账本跟着真实生命周期走，不靠猜。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def _starting_app(self):
+        app = FakeApp()
+        app._port_open = lambda: False
+        app._wait_started = lambda timeout, note_every=10.0: True
+        app._start_direct = lambda: True
+        app._verify_token_after_start = lambda: None
+        return app
+
+    def test_start_hands_pids_to_ledger(self):
+        app = self._starting_app()
+        app._pids_provider = lambda: ([4242], None)
+        with mock.patch.object(dsh_gui.single, "acquire_start_lock",
+                               lambda: single.StartLock(True, "")):
+            self.app_cls._start(app)
+        self.assertEqual(app.recorded, [[4242]])
+
+    def test_record_children_writes_ledger(self):
+        import os
+
+        app = FakeApp()
+        seen = {}
+
+        def recorder(pid, pids, **kw):
+            seen.update(pid=pid, pids=list(pids), kw=kw)
+            return True
+
+        with mock.patch.object(dsh_gui.children, "record", recorder):
+            self.app_cls._record_children(app, [4242, 4243])
+        self.assertEqual(seen["pid"], os.getpid())
+        self.assertEqual(seen["pids"], [4242, 4243])
+
+    def test_record_children_ignores_empty(self):
+        app = FakeApp()
+        with mock.patch.object(dsh_gui.children, "record") as record:
+            self.app_cls._record_children(app, [])
+        record.assert_not_called()
+
+    def test_recording_failure_only_warns(self):
+        app = FakeApp()
+        with mock.patch.object(dsh_gui.children, "record", lambda *a, **kw: False):
+            self.app_cls._record_children(app, [4242])
+        self.assertTrue(any("账本没写成" in line for line in app.logged))
+
+    def test_stop_marks_ledger_stopped(self):
+        app = FakeApp()
+        app._port_open = lambda: False
+        marks = []
+        with mock.patch.object(dsh_gui.psrun, "run_ps_cmd", lambda cmd, **kw: _ok_result()), \
+             mock.patch.object(dsh_gui.time, "sleep", lambda _s: None), \
+             mock.patch.object(dsh_gui.children, "mark",
+                               lambda status, **kw: marks.append(status) or True):
+            self.app_cls._stop(app, [4242])
+        self.assertEqual(marks, [dsh_gui.children.STATUS_STOPPED])
+
+    def test_stop_with_residue_does_not_claim_stopped(self):
+        app = FakeApp()
+        app._port_open = lambda: True
+        app._pids_provider = lambda: ([], None)
+        app._run_switch = _record_switch(app, _ok_result())
+        marks = []
+        with mock.patch.object(dsh_gui.probe, "portproxy_targets", lambda port: (["127.0.0.1"], None)), \
+             mock.patch.object(dsh_gui.time, "sleep", lambda _s: None), \
+             mock.patch.object(dsh_gui.children, "mark",
+                               lambda status, **kw: marks.append(status) or True):
+            self.app_cls._stop(app, [])
+        self.assertEqual(marks, [], "端口还在监听就不能写 stopped，否则下次启动不再报警")
+
+    def test_quit_marks_left_running(self):
+        import os
+
+        app = FakeApp()
+        for name in ("_close_overlays", "destroy"):
+            setattr(app, name, mock.Mock())
+        app._tail = app._relay = app._tray = None
+        seen = []
+        with mock.patch.object(dsh_gui.journal, "write", lambda text, target=None: None), \
+             mock.patch.object(dsh_gui.children, "mark",
+                               lambda status, **kw: seen.append((status, kw)) or True):
+            self.app_cls._quit(app)
+        self.assertEqual(seen[0][0], dsh_gui.children.STATUS_LEFT)
+        self.assertEqual(seen[0][1].get("console_pid"), os.getpid())
+
+    def test_leftover_check_skips_own_ledger(self):
+        import os
+
+        app = FakeApp()
+        own = {"version": 1, "consolePid": os.getpid(), "status": "running", "dsh": []}
+        with mock.patch.object(dsh_gui.children, "load", lambda: own), \
+             mock.patch.object(dsh_gui.threading, "Thread") as thread_cls:
+            self.app_cls._check_leftover_children(app)
+        thread_cls.assert_not_called()
+
+    def test_leftover_check_skips_missing_ledger(self):
+        app = FakeApp()
+        with mock.patch.object(dsh_gui.children, "load", lambda: None), \
+             mock.patch.object(dsh_gui.threading, "Thread") as thread_cls:
+            self.app_cls._check_leftover_children(app)
+        thread_cls.assert_not_called()
+
+    def test_leftover_worker_reports_pids(self):
+        import time as _time
+
+        app = FakeApp()
+        app._pids_provider = lambda: ([4242], None)
+        ledger = {"version": 1, "consolePid": 999, "status": "left-running",
+                  "dsh": [{"pid": 4242, "startedAt": _time.time()}]}
+        self.app_cls._check_leftover_children_worker(app, ledger)
+        self.assertTrue(any("4242" in line and "上次控制台留下的" in line for line in app.logged))
+
+    def test_leftover_worker_silent_when_unknown(self):
+        app = FakeApp()
+        app._pids_provider = lambda: (None, "powershell 挂了")
+        ledger = {"version": 1, "consolePid": 999, "status": "left-running",
+                  "dsh": [{"pid": 4242, "startedAt": 0.0}]}
+        self.app_cls._check_leftover_children_worker(app, ledger)
+        self.assertEqual(app.logged, [])
+
+    def test_leftover_worker_never_raises(self):
+        app = FakeApp()
+
+        def boom():
+            raise RuntimeError("process table exploded")
+
+        app._pids_provider = boom
+        ledger = {"version": 1, "consolePid": 999, "status": "left-running", "dsh": [{"pid": 1}]}
+        self.app_cls._check_leftover_children_worker(app, ledger)
+        self.assertTrue(any("对账失败" in line for line in app.logged))
 
 
 if __name__ == "__main__":

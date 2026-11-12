@@ -24,7 +24,8 @@ from urllib.parse import urlsplit
 import customtkinter as ctk
 from PIL import Image
 
-from dshconsole import (addresses, adopt, bridge, config, diagnostics, errors, journal, logtail,
+from dshconsole import (addresses, adopt, bridge, children, config, diagnostics, errors, journal,
+                        logtail,
                         phone, probe, psrun, resources, single, snapshot, status, tailscale,
                         tasks, textutil, tray, ui_theme, widgets)
 from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BADGE_SIZE, BG, BORDER,
@@ -455,6 +456,7 @@ class ConsoleApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(150, self.refresh)
         self.after(400, self._poll_activate)
+        self.after(700, self._check_leftover_children)
 
     # ---------------- 线程投递 / 关闭 / 托盘 ----------------
     def _post(self, fn, *args) -> None:
@@ -647,6 +649,8 @@ class ConsoleApp(ctk.CTk):
         """真退出：先停后台线程（日志跟随、托盘），再销毁窗口。"""
         # 落一行再走：有这一行=自己退的（用户点了✕/托盘退出），没这一行=进程被硬杀。
         journal.write("控制台正在退出（窗口关闭或托盘退出）。")
+        # 账本标成「我走了」：下次启动才知道这些进程是我留下的，而不是「本来就在运行」。
+        children.mark(children.STATUS_LEFT, console_pid=os.getpid())
         self._close_overlays()
         tail, self._tail = self._tail, None
         if tail is not None:
@@ -661,6 +665,45 @@ class ConsoleApp(ctk.CTk):
             self.destroy()
         except Exception:      # noqa: BLE001 - 已经在销毁路径上
             pass
+
+    # ---------------- 子进程账本（A1） ----------------
+    # 控制台一旦被硬杀/崩溃，它拉起的 node 就变成没人认领的遗留进程：占着 3080，
+    # 让「启动」以「已在运行」结束，让「重启」只关不起。账本是唯一能回答
+    # 「3080 上这个 node 是谁拉起来的」的东西，所以启动写、停止划掉、退出标遗留。
+    def _record_children(self, pids) -> None:
+        """把这次拉起的 PID 记进账本。记不进去只是少一份旁证，不影响已完成的启动。"""
+        if not pids:
+            return
+        ok = children.record(os.getpid(), list(pids), bin_js=CFG.bin_js)
+        if not ok:
+            self.log_async(f"进程账本没写成（{children.path()}）：下次启动将无法分辨遗留进程。")
+
+    def _check_leftover_children(self) -> None:
+        """开机对账：上次控制台退出时留下的 DSH 是不是还活着。查进程要起 PowerShell，放后台线程。"""
+        ledger = children.load()
+        if ledger is None:
+            return
+        if int(ledger.get("consolePid") or 0) == os.getpid():
+            return
+        threading.Thread(target=self._check_leftover_children_worker, args=(ledger,),
+                         daemon=True, name="dsh-ledger").start()
+
+    def _check_leftover_children_worker(self, ledger: dict) -> None:
+        try:
+            pids, err = self._pids_provider()
+            if pids is None:
+                return
+            items = children.leftovers(ledger, pids, os.getpid())
+            if not items:
+                return
+            names = "、".join(children.describe(item) for item in items[:3])
+            more = "" if len(items) <= 3 else f" 等 {len(items)} 个"
+            self.log_async(
+                f"发现上次控制台留下的 DSH 进程：{names}{more}。"
+                f"它正占着 {PORT}，而这次没有重新签 token —— 先「关闭 DSH」再「启动」"
+                "才会换成本次启动的实例。")
+        except Exception as exc:      # noqa: BLE001 - 对账失败不能拦住界面
+            self.log_async(f"进程账本对账失败：{exc}")
 
     def _set_icon(self) -> None:
         """标题栏图标：自绘 logo（PNG）优先，缺失回退仓库里的 .ico。"""
@@ -1900,6 +1943,7 @@ class ConsoleApp(ctk.CTk):
                 self.log_async(f"启动尚未验证：端口在线，但无法确认 DSH 进程（{started_err or '未匹配'}）。")
                 return
             self.log_async("启动完成：已识别本机 DSH 进程并确认端口在线。")
+            self._record_children(started_pids)
             self._verify_token_after_start()
         finally:
             lock.release()
@@ -2023,6 +2067,8 @@ class ConsoleApp(ctk.CTk):
             # 自动清理（切换脚本自带 UAC 提权；取消提权则保留原警告）。
             self._cleanup_residue()
         else:
+            # 账本跟着结论走：真停了就写 stopped，下次启动不会把它当成遗留进程报警。
+            children.mark(children.STATUS_STOPPED)
             self.log_async("DeepSeek Harness 已停止。")
 
     def _on_residue_click(self) -> None:
