@@ -22,7 +22,7 @@
 | PyInstaller | 6.22.3 |
 | 构建耗时 | 20.7 秒（干净重建，`build/`+`dist/` 全删后） |
 | 版本资源 | `FileVersion 2.1.0.0` / `ProductVersion 2.1.0.0` / `CompanyName berserkross` |
-| 签名 | 发布产物**不签名、也不随 Release 分发 exe**；本机构建可用 `scripts/sign-self-signed.ps1` 自签名（`Get-AuthenticodeSignature` → `Valid`，仅本机信任，见 [self-signed-local.md](self-signed-local.md)）。真实 CA 证书路径见第五节。 |
+| 签名 | v2.2.5 起 Release 附带自签名 exe（证书仅本机信任，见 [self-signed-local.md](self-signed-local.md)）；签名命令为 `scripts/sign-self-signed.ps1`，真实 CA 证书路径见第五节。 |
 
 `.rsrc` 从加版本资源之前的 71,912 B 长到 72,896 B（+984 B），与"版本资源确实写进去了"一致。
 
@@ -219,10 +219,11 @@ Import-Certificate -FilePath "$env:TEMP\dsh-test.cer" -CertStoreLocation Cert:\C
 
 所以自签名只用来验证"签名管线是否通"，发布仍应选 (a)，或者接受"未签名 + 公布 SHA256"。
 
-### 未签名的现实
+### 自签名与 SmartScreen 的现实
 
-当前产物未签名，别人第一次运行时 Windows 会弹 SmartScreen「Windows 已保护你的电脑」/「未知发布者」，
-需要点「更多信息 → 仍要运行」。这是未签名 exe 的预期行为，不是构建失败。可用的补充手段是把
+v2.2.5 起 Release 直接附带用自签名证书签名的 exe，但证书根只在本机受信任，别人机器上
+`Get-AuthenticodeSignature` 会返回 `UnknownError`，SmartScreen 仍会弹「Windows 已保护你的电脑」/「未知发布者」，
+需要点「更多信息 → 仍要运行」。这是自签名 exe 的预期行为，不是构建失败。可用的补充手段是把
 SHA256 写进 Release 说明，让对方自己校验：
 
 ```powershell

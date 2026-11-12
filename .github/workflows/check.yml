@@ -27,6 +27,12 @@ jobs:
           dshconsole/tray.py dshconsole/ui_theme.py dshconsole/widgets.py
       - name: Dependency import check
         run: python -c "import tkinter, customtkinter, PIL, qrcode, pystray; print('deps ok')"
+      # 文档漂移闸：README/CHANGELOG 里声明的版本、用例数、路径与行数必须与仓库一致。
+      # 只依赖标准库，放在单测之前，失败时先暴露文档问题。
+      - name: Docs consistency
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/check_docs.py
       # GUI 用例与两个自检都要真的窗口，所以放在依赖装好之后；自检不碰本机真实的
       # DSH 进程与端口（探测口全部注入），runner 上没有 DSH 也能跑。
       - name: GUI self-test

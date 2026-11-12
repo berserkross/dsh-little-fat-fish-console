@@ -16,9 +16,9 @@ DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双�
 > 以及手机访问的候选/策略层（Tailscale serve 优先、回环地址整条剔除）。
 > 2.2.1 起窗口可以缩到最小尺寸：内容整体纵向滚动，底栏不再被裁掉。
 > 2.2.2 修好了「重启 DSH 只关闭、不重启」，并加上「免 token 直连」：手机打开 `http://<tailnet-ip>:3081` 就能拿到会话。
-> 发布产物**不附带 exe**（原样源码与构建命令见 `docs\build-and-signing.md`）。自己构建出的 exe 未签名时，
-> 首次运行 Windows 会弹 SmartScreen「未知发布者」，点「更多信息 → 仍要运行」即可；只想本机消除这条提示，
-> 可用 `scripts\sign-self-signed.ps1` 自签名 —— 那对本机有效、对别人的机器无效，见 `docs\self-signed-local.md`。
+> 发布产物：v2.2.5 起 Release 附带自签名 exe（构建与签名命令见 `docs\build-and-signing.md`）。自签名证书
+> 只有本机信任，换一台机器首次运行仍会弹 SmartScreen「未知发布者」，点「更多信息 → 仍要运行」即可；
+> 本机消除提示可参考 `docs\self-signed-local.md`，用 `scripts\sign-self-signed.ps1` 自签名。
 
 ## 功能
 
@@ -207,12 +207,13 @@ dshconsole/data/launch-dsh.ps1   启动器（参数化，随包发布）
 dshconsole/data/switch-dsh-web.ps1  手机访问切换器（参数化，随包发布）
 tests/                           config / probe / psrun / status / redact / errors / single / adopt /
                                  logtail / tasks / snapshot / addresses / diagnostics / tray / GUI hooks
+scripts/check_docs.py            文档事实检查：版本、用例数、路径与行数声明必须与仓库一致
 requirements.txt                 运行依赖
 DSHConsole.spec                  PyInstaller 打包描述（onefile、console=False、version=）
 version_info.txt                 PE 版本资源的唯一源头（版本号只在这里定义）
 DeepSeekChan [256x256].ico       窗口与 exe 图标
 docs/build-and-signing.md        实测构建记录、版本信息与签名方案
-.github/workflows/check.yml      CI：依赖安装 + 语法检查 + 单元测试
+.github/workflows/check.yml      CI：依赖安装 + 文档检查 + 语法检查 + 单元测试 + 打包校验
 LICENSE                          MIT 许可证
 SECURITY.md                      漏洞上报方式与预期行为
 CHANGELOG.md                     版本变更记录
@@ -246,13 +247,13 @@ v1 的硬编码已在 v2「批次 A（可移植性）」修掉：
 批次 C（体验层）也已完成：托盘常驻、日志跟随、脱敏诊断包、地址下拉、命令队列，以及把一次状态
 刷新从 14.4 秒压到 2.1 秒（一次 PowerShell 调用替代七次独立 spawn）。
 
-批次 E（可发布构建）已完成：`version_info.txt` 给产物加上 PE 版本资源（`FileVersion 2.0.0.0`、
-`ProductName DSH 控制台（小肥鱼控制台）`、`CompanyName berserkross`、MIT 版权与仓库地址），
-spec 补 `version='version_info.txt'` 并把产物名统一为 `DSHConsole.exe`；冻结态两条自检
+批次 E（可发布构建）已完成：`version_info.txt` 给产物加上 PE 版本资源（当时为 `FileVersion 2.0.0.0`，
+后续版本已随 `__version__` 同步）、`ProductName DSH 控制台（小肥鱼控制台）`、`CompanyName berserkross`、
+MIT 版权与仓库地址），spec 补 `version='version_info.txt'` 并把产物名统一为 `DSHConsole.exe`；冻结态两条自检
 （`--selftest` / `--stop-selftest`）退出码均为 0，`.rsrc` 由 71,912 B 增至 72,896 B。
 
-仍未做：**产物未签名** —— 本机没有代码签名证书（`Cert:\CurrentUser\My -CodeSigningCert` 为空），
-所以别人第一次运行会看到 SmartScreen「未知发布者」；签名路径见 `docs\build-and-signing.md`。
+签名：v2.2.5 起 Release 附带用自签名证书签名的 exe（证书仅本机信任，见 `docs\self-signed-local.md`）；
+真实 CA 证书仍未接入，换机器运行仍会看到 SmartScreen「未知发布者」。
 批次 D（视觉重排，方案 1「大环 + 抽屉」）已完成：状态从四行文字变成一颗 120px 状态环，八个按钮收成一颗主按钮
 加一个「⋯」抽屉，常驻二维码改成「手机访问」模态浮层，日志默认只留末尾 15 行、需要时展开成独立窗口。
 功能面没有削减：托盘、单实例、诊断包、地址选择器、队列、日志跟随、采纳运行中实例全部照旧可用。
