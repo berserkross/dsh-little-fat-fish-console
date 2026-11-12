@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import socket
 import unittest
 import urllib.error
@@ -168,6 +169,114 @@ class RelayTargetProviderTests(unittest.TestCase):
             opener.open(relay.url, timeout=5)
         self.assertEqual(ctx.exception.code, 302)
         self.assertEqual(ctx.exception.headers.get("Location"), "http://phone.test/?token=tok")
+
+
+class ConsoleRouteTests(unittest.TestCase):
+    """/console 是手机端唯一的操作面：状态只读、动作要码、token 一个字都不能漏。"""
+
+    def _start(self, state=None, handler=None, token="tok-secret"):
+        port = free_port()
+        relay = bridge.Relay("127.0.0.1", port=port, dsh_port=3080,
+                             token_provider=lambda: token, mint=lambda authority, tok: None,
+                             state_provider=state, action_handler=handler)
+        relay.start()
+        self.addCleanup(relay.stop)
+        return relay
+
+    def _get(self, url):
+        with urllib.request.urlopen(url, timeout=3) as response:
+            return response.status, dict(response.headers), response.read()
+
+    def _post(self, url, body, headers=None):
+        request = urllib.request.Request(url, data=body, method="POST",
+                                         headers=headers or {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=3) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+
+    def test_console_page_is_served(self):
+        relay = self._start()
+        status, headers, body = self._get(relay.url + "console")
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", headers.get("Content-Type", ""))
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        self.assertIn("手机", body.decode("utf-8"))
+
+    def test_state_json_carries_the_provider_payload_but_never_the_token(self):
+        relay = self._start(state=lambda: {"phase": "running", "pid": 4242})
+        status, _headers, body = self._get(relay.url + "console.json")
+        self.assertEqual(status, 200)
+        payload = json.loads(body.decode("utf-8"))
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["pid"], 4242)
+        self.assertNotIn("tok-secret", body.decode("utf-8"))
+
+    def test_state_without_a_provider_is_reported_not_faked(self):
+        relay = self._start()
+        _status, _headers, body = self._get(relay.url + "console.json")
+        payload = json.loads(body.decode("utf-8"))
+        self.assertFalse(payload["ok"])
+        self.assertIn("message", payload)
+
+    def test_state_provider_failure_does_not_500_the_phone(self):
+        def boom():
+            raise RuntimeError("窗口还没建好")
+
+        relay = self._start(state=boom)
+        status, _headers, body = self._get(relay.url + "console.json")
+        self.assertEqual(status, 200)
+        payload = json.loads(body.decode("utf-8"))
+        self.assertFalse(payload["ok"])
+        self.assertIn("窗口还没建好", payload["message"])
+
+    def test_action_passes_the_code_and_intent_to_the_handler(self):
+        seen = []
+
+        def handler(code, intent):
+            seen.append((code, intent))
+            return True, "已开始：重启 DSH"
+
+        relay = self._start(handler=handler)
+        status, body = self._post(relay.url + "console/action",
+                                  json.dumps({"code": "123456", "intent": "restart"}).encode())
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode("utf-8")),
+                         {"ok": True, "message": "已开始：重启 DSH"})
+        self.assertEqual(seen, [("123456", "restart")])
+
+    def test_refused_action_comes_back_as_403_with_the_reason(self):
+        relay = self._start(handler=lambda code, intent: (False, "动作码不对"))
+        status, body = self._post(relay.url + "console/action",
+                                  json.dumps({"code": "000000", "intent": "stop"}).encode())
+        self.assertEqual(status, 403)
+        self.assertFalse(json.loads(body.decode("utf-8"))["ok"])
+
+    def test_handler_exception_is_a_refusal_not_a_crash(self):
+        def handler(code, intent):
+            raise RuntimeError("端口关不掉")
+
+        relay = self._start(handler=handler)
+        status, body = self._post(relay.url + "console/action",
+                                  json.dumps({"code": "123456", "intent": "stop"}).encode())
+        self.assertEqual(status, 403)
+        self.assertIn("端口关不掉", json.loads(body.decode("utf-8"))["message"])
+
+    def test_action_without_a_handler_is_not_implemented(self):
+        relay = self._start()
+        status, _body = self._post(relay.url + "console/action", b"{}")
+        self.assertEqual(status, 501)
+
+    def test_post_to_any_other_path_is_method_not_allowed(self):
+        relay = self._start(handler=lambda code, intent: (True, "x"))
+        status, _body = self._post(relay.url + "other", b"{}")
+        self.assertEqual(status, 405)
+
+    def test_malformed_body_is_a_bad_request(self):
+        relay = self._start(handler=lambda code, intent: (True, "x"))
+        status, _body = self._post(relay.url + "console/action", b"not json")
+        self.assertEqual(status, 400)
 
 
 if __name__ == "__main__":

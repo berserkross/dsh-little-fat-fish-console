@@ -26,7 +26,8 @@ from PIL import Image
 
 from dshconsole import (addresses, adopt, bridge, children, config, diagnostics, errors, journal,
                         logtail,
-                        phone, probe, psrun, resources, single, snapshot, status, tailscale,
+                        phone, portal, probe, psrun, resources, single, snapshot, status,
+                        tailscale,
                         tasks, textutil, tray, ui_theme, widgets)
 from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BADGE_SIZE, BG, BORDER,
                                  BORDER_STRONG, CARD, CARD2, CARD3, CARD_RADIUS, CHIP,
@@ -459,6 +460,7 @@ class ConsoleApp(ctk.CTk):
         self._tail: logtail.LogTailer | None = None
         self._close_to_tray = config.close_to_tray()
         self._auto_relay = config.auto_relay()
+        self._gate = portal.ActionGate()      # 手机端动作码：电脑给了码，手机才能动
         self.report_callback_exception = self._on_callback_error
         self._build()
         self.logline(f"DSH：{HARNESS or '未检测到'}  ·  端口 {PORT}  ·  node：{CFG.node or '未检测到'}")
@@ -633,6 +635,68 @@ class ConsoleApp(ctk.CTk):
                 self._tray = None
             self.logline("关闭按钮＝退出程序。")
         self._sync_close_hint()
+
+    def on_mint_action_code(self) -> None:
+        """给手机端签一枚 60 秒动作码，直接显示在底栏（不弹窗、不写盘）。"""
+        code = self._gate.mint()
+        self.logline(f"手机动作码：{code}（{int(portal.CODE_TTL)} 秒内有效，用一次就作废；"
+                     f"手机上打开直连地址后点 /console）")
+        label = getattr(self, "lbl_action_code", None)
+        if label is not None:
+            try:
+                label.configure(text=f"动作码 {code} · {int(portal.CODE_TTL)} 秒")
+            except Exception:      # noqa: BLE001 - 控件替身
+                pass
+            self.after(int(portal.CODE_TTL * 1000), lambda: self._expire_action_code(code))
+
+    def _expire_action_code(self, code: str) -> None:
+        """到点把底栏恢复成「手机动作码」——码已经不能用了，别让它留在屏幕上骗人。"""
+        if self._gate.remaining() > 0:
+            return
+        label = getattr(self, "lbl_action_code", None)
+        if label is None:
+            return
+        try:
+            label.configure(text="手机动作码")
+        except Exception:      # noqa: BLE001
+            pass
+
+    def _portal_state(self) -> dict:
+        """给 /console.json 的状态快照：只读事实，**不含 token**。"""
+        state = getattr(self, "_last_status", None)
+        phase = getattr(state, "phase", None)
+        pids = getattr(state, "pids", None) or []
+        relay = getattr(self, "_relay", None)
+        return {
+            "at": time.time(),
+            "phase": getattr(phase, "name", "").lower() or None,
+            "label": getattr(phase, "label", "未知"),
+            "port": PORT,
+            "pid": pids[0] if pids else None,
+            "port_open": getattr(state, "port_open", None),
+            "serving": getattr(state, "serving", None),
+            "phone_open": getattr(state, "phone_open", None),
+            "ts_ip": getattr(state, "ts_ip", None),
+            "residue": bool(getattr(state, "residue", False)),
+            "relay": bool(relay is not None and getattr(relay, "running", False)),
+            "code_remaining": self._gate.remaining(),
+            "actions": sorted(portal.ACTIONS),
+        }
+
+    def _portal_action(self, code: str, intent: str) -> tuple[bool, str]:
+        """手机端动作：先核销动作码，再照常走队列（跑在 relay 线程上，不能碰 Tk）。"""
+        ok, message = self._gate.redeem(code, intent)
+        if not ok:
+            self.log_async(f"手机端动作被拒：{message}")
+            return False, message
+        work = {
+            "start": self._start,
+            "restart": lambda: self._restart(confirm=False),
+            "stop": lambda: self._stop_prepare(confirm=False),
+        }[intent]
+        self._submit(f"手机：{message}", work)
+        self.log_async(f"手机端已授权：{message}（动作码已作废）")
+        return True, f"已开始：{message}"
 
     def on_toggle_auto_relay(self) -> None:
         """免 token 直连是否「看到 tailnet 地址就自动开」，写回 config.json。"""
@@ -1039,6 +1103,10 @@ class ConsoleApp(ctk.CTk):
         self.lbl_close_hint = ctk.CTkLabel(foot, text="", font=_font(11), text_color=FAINT,
                                            anchor="e")
         self.lbl_close_hint.pack(side="right", padx=(0, 12))
+        self.lbl_action_code = ctk.CTkLabel(foot, text="手机动作码", font=_font(11),
+                                           text_color=FAINT, cursor="hand2")
+        self.lbl_action_code.pack(side="right", padx=(0, 12))
+        self.lbl_action_code.bind("<Button-1>", lambda _e: self.on_mint_action_code())
         self._sync_close_hint()
 
     # ---------------- 玻璃底图 / 重排 ----------------
@@ -1693,7 +1761,7 @@ class ConsoleApp(ctk.CTk):
                 return False
             time.sleep(0.4)
 
-    def _restart(self) -> None:
+    def _restart(self, confirm: bool = True) -> None:
         """重启 = 真的先停再起：停完看到端口关掉才起，起完看到端口打开才报完成。
 
         旧版停在「_stop() 之后直接 _start()」：而 _start() 有一条「端口在线就别再拉」
@@ -1711,7 +1779,7 @@ class ConsoleApp(ctk.CTk):
             self.log_async("重启②：没有正在运行的 DSH，直接启动。")
         else:
             listing = "\n".join(f"    PID {pid}" for pid in pids)
-            if not self._ask_main(messagebox.askyesno, "重启确认",
+            if confirm and not self._ask_main(messagebox.askyesno, "重启确认",
                                   f"将先结束以下 node 进程再重新启动：\n{listing}\n\n"
                                   "当前网页会断开（会话已存档可重开）。继续吗？"):
                 self.log_async("已取消重启，未结束任何进程。")
@@ -2062,7 +2130,7 @@ class ConsoleApp(ctk.CTk):
         """先查出将被结束的 PID 让用户确认，再动手；不确定就一个都不杀。"""
         self._submit("停止 DeepSeek Harness", self._stop_prepare)
 
-    def _stop_prepare(self) -> None:
+    def _stop_prepare(self, confirm: bool = True) -> None:
         pids, err = self._pids_provider()
         if pids is None:
             self.log_async(f"未知：node 进程查不到（{err}），已取消停止，避免误杀。")
@@ -2076,7 +2144,7 @@ class ConsoleApp(ctk.CTk):
             return
         listing = "\n".join(f"    PID {pid}" for pid in pids)
         bin_js = str(CFG.bin_js) if CFG.bin_js else "（未探测到 bin.js）"
-        if not self._ask_main(messagebox.askyesno, "停止确认",
+        if confirm and not self._ask_main(messagebox.askyesno, "停止确认",
                               f"将结束以下 node 进程：\n{listing}\n\n"
                               f"识别依据：命令行里含\n    {bin_js}\n\n"
                               "当前网页会断开（会话已存档可重开）。继续吗？"):
@@ -2204,7 +2272,9 @@ class ConsoleApp(ctk.CTk):
         if now < getattr(self, "_relay_auto_next", 0.0):
             return
         relay = bridge.Relay(ip, dsh_port=PORT, token_provider=self._relay_token,
-                              target_provider=self._relay_target)
+                              target_provider=self._relay_target,
+                              state_provider=self._portal_state,
+                              action_handler=self._portal_action)
         try:
             relay.start()
         except OSError as exc:
@@ -2243,7 +2313,9 @@ class ConsoleApp(ctk.CTk):
                 self.log_async("没探测到 Tailscale IP：先点「刷新状态」，再开直连。")
                 return
             relay = bridge.Relay(ip, dsh_port=PORT, token_provider=self._relay_token,
-                              target_provider=self._relay_target)
+                              target_provider=self._relay_target,
+                              state_provider=self._portal_state,
+                              action_handler=self._portal_action)
             try:
                 relay.start()
             except OSError as exc:

@@ -11,7 +11,7 @@ try:
 except Exception as exc:  # noqa: BLE001 - 缺 GUI 依赖时跳过
     raise unittest.SkipTest("无法导入 GUI：" + str(exc))
 
-from dshconsole import adopt, psrun, snapshot, status, tasks
+from dshconsole import adopt, portal, psrun, snapshot, status, tasks
 
 FAKE_BIN_JS = r"C:\自检\node_modules\@deepseek-ai\dsh\lib\bin.js"
 
@@ -379,6 +379,77 @@ class ResidueChipTests(unittest.TestCase):
                                lambda port: (["127.0.0.1"], None)):
             self.app_cls._on_residue_click(app)
         self.assertTrue(any("端口转发残留清理失败" in line for line in app.logged))
+
+
+class PortalBridgeTests(unittest.TestCase):
+    """手机端能看的和能做的：状态是只读事实，动作必须凭电脑上签的那枚码。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def _app(self):
+        app = FakeApp()
+        app._gate = portal.ActionGate(clock=lambda: 1000.0, rand=lambda span: 482913 % span)
+        app.lbl_action_code = Widget()
+        app._relay = None
+        app._last_status = status.Status(
+            phase=status.Phase.RUNNING, pids=[4242], port_open=True, serving=True,
+            phone_open=True, ts_ip="100.124.206.105", lan_ips=None, notes=[])
+        app._start = lambda: None
+        app._restart = lambda **kw: None
+        app._stop_prepare = lambda **kw: None
+        app.submitted = []
+        app._submit = lambda name, work, on_done=None: app.submitted.append(name)
+        app._expire_action_code = lambda code: self.app_cls._expire_action_code(app, code)
+        return app
+
+    def test_minting_shows_the_code_in_the_footer_and_the_log(self):
+        app = self._app()
+        self.app_cls.on_mint_action_code(app)
+        self.assertIn("482913", app.lbl_action_code.kw.get("text", ""))
+        self.assertTrue(any("手机动作码：482913" in line for line in app.logged))
+
+    def test_state_payload_carries_facts_and_no_token(self):
+        app = self._app()
+        payload = self.app_cls._portal_state(app)
+        self.assertEqual(payload["phase"], "running")
+        self.assertEqual(payload["pid"], 4242)
+        self.assertTrue(payload["serving"])
+        self.assertFalse(payload["relay"])
+        self.assertEqual(payload["actions"], ["restart", "start", "stop"])
+        self.assertNotIn("token", " ".join(payload))
+
+    def test_state_payload_survives_before_the_first_probe(self):
+        app = self._app()
+        app._last_status = None
+        payload = self.app_cls._portal_state(app)
+        self.assertIsNone(payload["pid"])
+        self.assertEqual(payload["label"], "未知")
+
+    def test_action_with_a_wrong_code_is_refused_and_nothing_runs(self):
+        app = self._app()
+        app._gate.mint()
+        ok, message = self.app_cls._portal_action(app, "000000", "restart")
+        self.assertFalse(ok)
+        self.assertIn("不对", message)
+        self.assertEqual(app.submitted, [])
+        self.assertTrue(any("手机端动作被拒" in line for line in app.logged))
+
+    def test_action_with_the_minted_code_queues_the_lifecycle_step(self):
+        app = self._app()
+        code = app._gate.mint()
+        ok, message = self.app_cls._portal_action(app, code, "stop")
+        self.assertTrue(ok)
+        self.assertIn("关闭 DSH", message)
+        self.assertEqual(app.submitted, ["手机：关闭 DSH"])
+        self.assertEqual(app._gate.remaining(), 0)
+
+    def test_a_used_code_cannot_drive_a_second_action(self):
+        app = self._app()
+        code = app._gate.mint()
+        self.app_cls._portal_action(app, code, "start")
+        ok, _message = self.app_cls._portal_action(app, code, "stop")
+        self.assertFalse(ok)
+        self.assertEqual(len(app.submitted), 1)
 
 
 class AutoRelayToggleTests(unittest.TestCase):
