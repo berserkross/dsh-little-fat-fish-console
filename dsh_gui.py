@@ -215,6 +215,16 @@ def dsh_pids() -> tuple[list[int] | None, str | None]:
     return probe.dsh_processes(CFG.bin_js)
 
 
+def http_ready(port: int | None = None) -> bool:
+    """DSH 是否真的在应答。
+
+    端口开着只说明有人 bind 了 3080：插件还在加载时它接了连接却不回话，
+    上一份 DSH 没退干净时它是半死状态。这两种都算「没起来」，
+    否则控制台会在自己还没就绪时宣布启动完成。
+    """
+    return probe.http_answer(PORT if port is None else port) is not None
+
+
 def _report(text: str) -> None:
     """未捕获异常的出口：有窗口就写日志框，没有窗口就写 stderr —— 绝不静默。"""
     app = _APP
@@ -435,6 +445,7 @@ class ConsoleApp(ctk.CTk):
         # 可注入的探测口：自检用替身，不再改写模块全局（B2-3）
         self._pids_provider = dsh_pids
         self._port_open = port_open
+        self._serving = http_ready          # 端口开着 ≠ 已就绪：要真的答话
         self._status_provider = self._load_status
         self._phone_planner = phone.detect_plan     # tailscale 探测/编排入口
         self._port_owner = adopt.from_port_owner    # 「这个端口是谁在听」：探测层可注入
@@ -1912,6 +1923,12 @@ class ConsoleApp(ctk.CTk):
         # 所以这里加一道守卫：端口已经在线就不再加拉一份 DSH。
         # force=True 只给重启用：重启已经自己确认过端口关掉了，守卫在这儿会把它挡死。
         if self._port_open():
+            # 端口开着但答不出 HTTP：这不叫「已经在运行」，是半死。仍不叠第二份，
+            # 但要把话说清，否则用户会以为「明明在跑，为什么网页打不开」。
+            if not self._serving():
+                self.log_async(f"{PORT} 在监听但不应答 HTTP（{self._port_owner_text()}）："
+                               "这不是一份能用的 DSH。先点「关闭 DSH」清掉它，再启动。")
+                return
             self.log_async(f"{PORT} 已在监听：{self._port_owner_text()}。"
                            "不再起第二份 —— 起了也只会撞出 EADDRINUSE。要换成控制台这份，先点「关闭 DSH」。")
             return
@@ -1993,18 +2010,26 @@ class ConsoleApp(ctk.CTk):
             self.log_async("两份启动日志都没有内容：进程可能根本没被拉起（见上一条失败原因）。")
 
     def _wait_started(self, timeout: float, note_every: float = 10.0) -> bool:
-        """等端口起来，每 note_every 秒报一次进度。
+        """等 DSH 真的就绪：端口在监听，并且已经在用 HTTP 答话。
 
-        原来一律死等 20 秒然后说「没起来」：冷启动 + 插件加载偶尔要 30 秒，
-        于是控制台宣布失败、用户以为「只关了没起」。这里把等待拉长并把进度说出来。
+        原来只等端口：抢占 3080 的任何一个进程、或上一份 DSH 还没退干净的半死状态，
+        都能让控制台当场宣布「启动完成」，随后网页打不开、手机 401。
+        现在两种都算没起来，超时时把「在监听却不答话」单独说出来。
+        每 note_every 秒报一次进度：冷启动 + 加载插件偶尔要 30 秒以上。
         """
         deadline = time.time() + timeout
         note_at = time.time() + note_every
+        silent = 0                    # 端口开着却没 HTTP 应答的轮数
         while True:
             if self._port_open():
-                return True
+                if self._serving():
+                    return True
+                silent += 1
             now = time.time()
             if now >= deadline:
+                if silent:
+                    self.log_async(f"{PORT} 在监听却不答 HTTP：可能上一份 DSH 还没退干净，"
+                                   "或别的程序占着这个端口 —— 这一次不算起来。")
                 return False
             if now >= note_at:
                 note_at = now + note_every

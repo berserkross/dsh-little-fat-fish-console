@@ -31,6 +31,7 @@ class FakeApp:
         self.logged = []
         self._pids_provider = lambda: (None, "not wired")
         self._port_open = lambda: False
+        self._serving = lambda: True      # 替身：端口开着就算答话，特殊场景单独覆盖
         self._run_switch = lambda *a, **kw: None
         self._ask_main = lambda fn, *args: None
         self.switch_calls: list = []
@@ -223,6 +224,16 @@ class StartGuardTests(unittest.TestCase):
                 self.assertTrue(any("已在监听" in line for line in app.logged))
                 self.assertTrue(any("占用者未知" in line for line in app.logged))
 
+    def test_silent_port_is_named_as_half_dead(self):
+        app = FakeApp()
+        app._port_open = lambda: True
+        app._serving = lambda: False
+        with mock.patch.object(self.app_cls, "_start_direct") as direct:
+            self.app_cls._start(app)
+        direct.assert_not_called()
+        self.assertTrue(any("不应答 HTTP" in line for line in app.logged), app.logged)
+        self.assertFalse(any("已在监听" in line for line in app.logged), "半死不等于已在运行")
+
 
 class RestartAbortTests(unittest.TestCase):
     """_restart()：端口被占但认不出本机 PID 时中止，绝不叠加启动。"""
@@ -313,6 +324,30 @@ class WaitStartedTests(unittest.TestCase):
         app._port_open = lambda: False
         with mock.patch.object(dsh_gui.time, "sleep", lambda _s: None):
             self.assertFalse(self.app_cls._wait_started(app, 0.0))
+
+    def test_port_open_without_http_answers_is_not_ready(self):
+        app = FakeApp()
+        app._port_open = lambda: True
+        app._serving = lambda: False
+        with mock.patch.object(dsh_gui.time, "sleep", lambda _s: None):
+            self.assertFalse(self.app_cls._wait_started(app, 0.0))
+        self.assertTrue(any("不答 HTTP" in line for line in app.logged), app.logged)
+
+    def test_port_open_and_answering_is_ready(self):
+        app = FakeApp()
+        app._port_open = lambda: True
+        app._serving = lambda: True
+        self.assertTrue(self.app_cls._wait_started(app, 0.0))
+        self.assertEqual(app.logged, [])
+
+    def test_http_is_only_asked_once_the_port_accepts(self):
+        app = FakeApp()
+        app._port_open = lambda: False
+        asked = []
+        app._serving = lambda: asked.append(1) or True
+        with mock.patch.object(dsh_gui.time, "sleep", lambda _s: None):
+            self.assertFalse(self.app_cls._wait_started(app, 0.0))
+        self.assertEqual(asked, [], "端口没开就问 HTTP 只是白等一个超时")
 
 
 class DumpTailsTests(unittest.TestCase):

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
 import re
@@ -85,7 +86,26 @@ def token_accepted(port: int, token: str, host: str = "127.0.0.1",
         if 200 <= code < 400:        # 不跟随重定向时，303 会以 HTTPError 的形式出现
             return True
         return False if code == 401 else None
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
+        return None
+
+
+def http_answer(port: int, host: str = "127.0.0.1", timeout: float = 1.5,
+                opener=None) -> int | None:
+    """端口在监听不等于 DSH 活着：真正答出 HTTP 才算。
+
+    返回状态码本身，连不上 / 超时 / 答的不是 HTTP 一律 None。401 与 302 都算答话——
+    认证拒绝恰恰证明服务在跑；把「插件还在加载的半死实例」和「端口被别的程序占着」
+    从「已就绪」里摘出来的，就是这个区别。
+    """
+    url = f"http://{host}:{int(port)}/"
+    open_url = opener or _default_opener().open
+    try:
+        with open_url(url, timeout=timeout) as response:
+            return int(getattr(response, "status", 200) or 200)
+    except urllib.error.HTTPError as exc:
+        return int(getattr(exc, "code", 0) or 0) or None
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
         return None
 
 

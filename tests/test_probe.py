@@ -282,6 +282,58 @@ class TokenAcceptedTests(unittest.TestCase):
         self.assertEqual(seen, ["http://127.0.0.1:3080/?token=a%2Bb%2Fc%3Dd"])
 
 
+class HttpAnswerTests(unittest.TestCase):
+    """端口开着不等于 DSH 活着：这一层只回答「它答不答 HTTP」。
+
+    401 是答话（认证拒绝恰恰证明服务在跑），只有连不上/超时/非 HTTP 才算哑巴。
+    """
+
+    class _Response:
+        def __init__(self, status):
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def test_status_code_is_returned(self):
+        self.assertEqual(probe.http_answer(3080, opener=lambda *a, **k: self._Response(200)), 200)
+
+    def test_401_still_counts_as_answering(self):
+        def opener(*_a, **_k):
+            raise urllib.error.HTTPError("http://x/", 401, "no", {}, None)
+        self.assertEqual(probe.http_answer(3080, opener=opener), 401)
+
+    def test_redirect_counts_as_answering(self):
+        def opener(*_a, **_k):
+            raise urllib.error.HTTPError("http://x/", 303, "see other", {}, None)
+        self.assertEqual(probe.http_answer(3080, opener=opener), 303)
+
+    def test_unreachable_is_none(self):
+        def opener(*_a, **_k):
+            raise urllib.error.URLError("down")
+        self.assertIsNone(probe.http_answer(3080, opener=opener))
+
+    def test_non_http_answer_is_none(self):
+        import http.client
+
+        def opener(*_a, **_k):
+            raise http.client.BadStatusLine("garbage")
+        self.assertIsNone(probe.http_answer(3080, opener=opener))
+
+    def test_url_has_no_token_and_no_trailing_path(self):
+        seen = []
+
+        def opener(url, **_k):
+            seen.append(url)
+            return self._Response(200)
+
+        probe.http_answer(3099, opener=opener)
+        self.assertEqual(seen, ["http://127.0.0.1:3099/"])
+
+
 class TokenUrlTests(unittest.TestCase):
     """日志里那把 token 必须原样抠出来：截断会让 3081 永远跳一把死钥匙。"""
 
