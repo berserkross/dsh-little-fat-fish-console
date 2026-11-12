@@ -31,7 +31,7 @@ _PHASE_LABELS = {
     Phase.STOPPED: "未运行",
     Phase.STARTING: "启动中",
     Phase.RUNNING: "运行中",
-    Phase.DEGRADED: "异常（端口被占用）",
+    Phase.DEGRADED: "异常",
     Phase.UNKNOWN: "未知",
 }
 
@@ -43,6 +43,7 @@ class Status:
     phase: Phase
     pids: list[int] | None = None                        # None = 进程列表未判定
     port_open: bool | None = None
+    serving: bool | None = None                          # 端口通时它答不答 HTTP（None = 没问）
     phone_open: bool | None = None                       # 端口转发指向本机端口 + 防火墙规则都在
     phone_targets: list[tuple[str, int]] | None = None   # 当前转发指向的 (地址, 端口)
     residue: bool | None = None                          # 转发规则残留（规则在、本机 PID 不在）
@@ -89,6 +90,7 @@ def _phone_from_values(targets: list[tuple[str, int]] | None, proxy_err: str | N
 
 
 def assemble(cfg, *, pids: list[int] | None, pids_err: str | None, listening: bool | None,
+             serving: bool | None = None,
              targets: list[tuple[str, int]] | None, proxy_err: str | None,
              allowed: bool | None, firewall_err: str | None,
              ts_ip: str | None = None, ts_err: str | None = None,
@@ -112,12 +114,15 @@ def assemble(cfg, *, pids: list[int] | None, pids_err: str | None, listening: bo
     primary: list[str] = []
     # 判定规则（顺序即优先级）：
     #   关键探测（进程列表 / 端口）任一为 None        -> UNKNOWN（查不到不等于没在跑）
-    #   端口通 + 本机 PID 命中                        -> RUNNING
+    #   端口通 + 本机 PID 命中 + HTTP 明确不应答      -> DEGRADED（半死：接得住连接、不回话）
+    #   端口通 + 本机 PID 命中                        -> RUNNING（serving=None 不降级）
     #   端口通但本机 PID 明确为空                     -> DEGRADED（端口被别的程序占了）
     #   端口不通但进程在                               -> STARTING（进程起来了，端口还没监听）
     #   端口不通 + 没有进程                           -> STOPPED
     if pids is None or listening is None:
         phase = Phase.UNKNOWN
+    elif listening and pids and serving is False:
+        phase = Phase.DEGRADED
     elif listening and pids:
         phase = Phase.RUNNING
     elif listening:
@@ -133,6 +138,13 @@ def assemble(cfg, *, pids: list[int] | None, pids_err: str | None, listening: bo
             primary.append(f"未知：进程列表查不到（{pids_err}）")
         if listening is None:
             primary.append(f"未知：端口 {port} 探测没有得到结论")
+    elif phase is Phase.DEGRADED and pids:
+        # 进程在、端口在、就是不说话：跟「端口被别人占了」是两种病，别混成一句话。
+        shown = "、".join(str(pid) for pid in pids)
+        primary.append(
+            f"端口 {port} 在监听、本机 DSH 进程也在（PID {shown}），但它不应答 HTTP："
+            "多半还在加载插件，或进程已经卡住。等一会儿再刷新；一直这样就「重启 DSH」。"
+        )
     elif phase is Phase.DEGRADED:
         primary.append(f"端口 {port} 已被监听，但没有找到本机 bin.js 的 node 进程："
                        "可能是别的程序占用了端口。")
@@ -157,6 +169,7 @@ def assemble(cfg, *, pids: list[int] | None, pids_err: str | None, listening: bo
         phase=phase,
         pids=pids,
         port_open=listening,
+        serving=serving,
         phone_open=phone,
         phone_targets=targets,
         residue=residue,
@@ -184,6 +197,7 @@ def probe_phone(cfg, *, portproxy: Callable | None = None,
 
 
 def probe_status(cfg, *, processes: Callable | None = None, port_open: Callable | None = None,
+                 serving: Callable | None = None,
                  portproxy: Callable | None = None, firewall: Callable | None = None,
                  tailscale: Callable | None = None, lan: Callable | None = None,
                  others: Callable | None = None,
@@ -204,13 +218,14 @@ def probe_status(cfg, *, processes: Callable | None = None, port_open: Callable 
 
     pids, pids_err = get_processes(cfg.bin_js)
     listening = get_port(port)
+    answering = serving() if (serving is not None and listening) else None
     targets, proxy_err = get_proxy(port)
     allowed, firewall_err = get_firewall(port)
     ts_ip, ts_err = get_tailscale(cfg.tailscale)
     lan_list, lan_err = get_lan()
     sources = lan_sources() if lan_sources else None
     return assemble(
-        cfg, pids=pids, pids_err=pids_err, listening=listening,
+        cfg, pids=pids, pids_err=pids_err, listening=listening, serving=answering,
         targets=targets, proxy_err=proxy_err, allowed=allowed, firewall_err=firewall_err,
         ts_ip=ts_ip, ts_err=ts_err, lan=lan_list, lan_err=lan_err, lan_sources=sources,
         others=lambda: get_others(cfg.bin_js),
@@ -218,6 +233,7 @@ def probe_status(cfg, *, processes: Callable | None = None, port_open: Callable 
 
 
 def probe_status_batch(cfg, *, raw=None, port_open: Callable | None = None,
+                       serving: Callable | None = None,
                        probe_all: Callable | None = None) -> Status:
     """界面用的一次刷新：一次 PowerShell + 三条原生查询并行（见 probe.probe_all）。
 
@@ -227,6 +243,7 @@ def probe_status_batch(cfg, *, raw=None, port_open: Callable | None = None,
     port = int(cfg.port)
     get_port = port_open or probe.port_open
     listening = get_port(port)
+    answering = serving() if (serving is not None and listening) else None
 
     if data.processes is None:
         pids, pids_err = None, data.process_error
@@ -246,7 +263,7 @@ def probe_status_batch(cfg, *, raw=None, port_open: Callable | None = None,
         ], None
 
     return assemble(
-        cfg, pids=pids, pids_err=pids_err, listening=listening,
+        cfg, pids=pids, pids_err=pids_err, listening=listening, serving=answering,
         targets=targets, proxy_err=proxy_err,
         allowed=data.firewall, firewall_err=data.firewall_error,
         ts_ip=data.ts_ip, ts_err=data.ts_error,

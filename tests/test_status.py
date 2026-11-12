@@ -12,6 +12,7 @@ OTHER_BIN_JS = ("C:/Users/Ibash/AppData/Local/npm-cache/_npx/1e7f6d9597241db0"
                 "/node_modules/../@deepseek-ai/dsh/lib/bin.js")
 TS_EXE = "C:/Program Files/Tailscale/tailscale.exe"
 LOCAL_TARGETS = [("127.0.0.1", 3080)]
+NODE_CMD = f'node.EXE "{BIN_JS}" web --no-open --port 3080'
 FOREIGN_TARGETS = [("10.0.0.9", 3080)]
 
 
@@ -25,11 +26,13 @@ def fixed(value):
 
 def run_probe(processes=([], None), listening=False, targets=([], None),
               firewall=(True, None), tailscale=("100.124.206.105", None),
-              lan=(["10.23.115.16"], None), others=([], None)) -> status.Status:
+              lan=(["10.23.115.16"], None), others=([], None),
+              serving=None) -> status.Status:
     return status.probe_status(
         cfg(),
         processes=fixed(processes),
         port_open=fixed(listening),
+        serving=fixed(serving),
         portproxy=fixed(targets),
         firewall=fixed(firewall),
         tailscale=fixed(tailscale),
@@ -80,6 +83,29 @@ class PhaseTests(unittest.TestCase):
         self.assertIn("别的程序", state.notes[0])
         self.assertIn("9856", state.notes[1])
 
+    def test_half_dead_when_process_holds_port_but_http_is_silent(self):
+        """进程在、端口在、就是不应答 —— 这不是「运行中」，也不该甩锅给别的安装。"""
+        state = run_probe(processes=([111], None), listening=True,
+                          others=([(9856, OTHER_BIN_JS)], None), serving=False)
+        self.assertIs(state.phase, Phase.DEGRADED)
+        self.assertIs(state.serving, False)
+        self.assertEqual(state.pids, [111])
+        self.assertIn("不应答 HTTP", state.notes[0])
+        self.assertIn("111", state.notes[0])
+        self.assertFalse(any("别的程序" in note for note in state.notes), state.notes)
+        self.assertFalse(any("9856" in note for note in state.notes), state.notes)
+
+    def test_serving_unknown_keeps_running(self):
+        """一次探测超时不能把跑着的 DSH 说成异常：None 是「没问」，不是 False。"""
+        state = run_probe(processes=([111], None), listening=True, serving=None)
+        self.assertIs(state.phase, Phase.RUNNING)
+        self.assertIsNone(state.serving)
+
+    def test_serving_true_is_running(self):
+        state = run_probe(processes=([111], None), listening=True, serving=True)
+        self.assertIs(state.phase, Phase.RUNNING)
+        self.assertIs(state.serving, True)
+
     def test_stopped_when_no_port_and_no_pid(self):
         state = run_probe(processes=([], None), listening=False)
         self.assertIs(state.phase, Phase.STOPPED)
@@ -108,6 +134,51 @@ class PhaseTests(unittest.TestCase):
         self.assertEqual(Phase.UNKNOWN.label, "未知")
         self.assertEqual(Phase.STOPPED.label, "未运行")
         self.assertNotEqual(Phase.UNKNOWN.label, Phase.STOPPED.label)
+
+
+def raw_batch(pairs=(), portproxy_text="", firewall=(True, None)):
+    """probe.probe_all 的返回值形状：界面刷新那条路只跑这一份原始数据。"""
+    return SimpleNamespace(
+        processes=list(pairs), process_error=None,
+        portproxy_text=portproxy_text, portproxy_error=None,
+        firewall=firewall[0], firewall_error=firewall[1],
+        ts_ip="100.124.206.105", ts_error=None,
+        lan_ips=["10.23.115.16"], address_error=None,
+        addresses=None, timings={},
+    )
+
+
+class BatchServingTests(unittest.TestCase):
+    """批量刷新那条路（界面真正走的）也要问一句「答不答 HTTP」，否则芯片上永远是运行中。"""
+
+    def run_batch(self, listening, serving=None, pairs=()):
+        asked = []
+
+        def probe_serving():
+            asked.append(1)
+            return serving
+
+        state = status.probe_status_batch(
+            cfg(), raw=raw_batch(pairs=pairs),
+            port_open=fixed(listening), serving=probe_serving,
+        )
+        return state, asked
+
+    def test_http_is_not_asked_when_port_is_closed(self):
+        state, asked = self.run_batch(listening=False)
+        self.assertEqual(asked, [], "端口没开就问 HTTP 只是白等一个超时")
+        self.assertIsNone(state.serving)
+        self.assertIs(state.phase, Phase.STOPPED)
+
+    def test_silent_process_holds_the_port_is_degraded(self):
+        state, asked = self.run_batch(listening=True, serving=False, pairs=[(111, NODE_CMD)])
+        self.assertEqual(asked, [1])
+        self.assertIs(state.phase, Phase.DEGRADED)
+        self.assertIn("不应答 HTTP", state.notes[0])
+
+    def test_answering_process_is_running(self):
+        state, _asked = self.run_batch(listening=True, serving=True, pairs=[(111, NODE_CMD)])
+        self.assertIs(state.phase, Phase.RUNNING)
 
 
 class PhoneTests(unittest.TestCase):

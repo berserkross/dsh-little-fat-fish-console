@@ -1402,7 +1402,7 @@ class ConsoleApp(ctk.CTk):
     def _load_status(self) -> "status.Status":
         """一次探测：原始数据留给诊断包，状态留给界面。"""
         raw = probe.probe_all(int(PORT), CFG.tailscale)
-        state = status.probe_status_batch(CFG, raw=raw)
+        state = status.probe_status_batch(CFG, raw=raw, serving=self._serving)
         self._last_raw = raw
         return state
 

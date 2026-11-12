@@ -50,7 +50,7 @@ Tailscale / 局域网地址。
 | 未运行 | 灰 | 启动 DSH |
 | 启动中 | 青色，弧长在走 | 停止 DSH |
 | 运行中 | 绿 | 停止 DSH |
-| 异常（端口被占用） | 橙 | 修复/重启 |
+| 异常 | 橙 | 修复/重启 |
 | 未知 | 暗灰 | 重新探测 |
 
 每一态除了颜色还有文字（环内短词 + 右侧完整说明），不靠颜色单独区分。其余操作——重启、切换 Web 端口、
@@ -147,7 +147,7 @@ python .\dsh_gui.py --harness="D:\apps\deepseek-harness" --port=3080   # 等号�
 非 Windows 或系统调用不可用时这层检查自动跳过，只在日志里留一行，不影响启动。
 
 另一件事是「跑着的 DSH 不是记录里那份」。当端口被监听、却找不到本机 `bin.js` 对应的 `node` 进程时，
-状态显示为「异常（端口被占用）」，并在日志里列出占用端口的可能是另一处安装的 DSH（PID + 路径）。
+状态显示为「异常」，并在日志里列出占用端口的可能是另一处安装的 DSH（PID + 路径）。
 这时状态行下方会出现一个按钮：
 
 ```text
@@ -192,7 +192,7 @@ dsh_gui.py                       主程序（GUI + 状态机 + 大环 / 单主�
 dshconsole/ui_theme.py           配色、尺寸与五态视觉常量（UI 唯一调色板）
 dshconsole/widgets.py            自绘控件：状态环、⋯ 抽屉、二维码浮层、全屏日志浮层
 dshconsole/config.py             探测与 config.json 读写（只依赖标准库，可无 GUI 导入）
-dshconsole/status.py             五态判定：未运行 / 启动中 / 运行中 / 异常（端口被占用）/ 未知
+dshconsole/status.py             五态判定：未运行 / 启动中 / 运行中 / 异常 / 未知
 dshconsole/probe.py              进程、端口、portproxy、防火墙、Tailscale、局域网地址探测
 dshconsole/psrun.py              结构化 PowerShell 调用（超时 / 权限 / 未安装分开表达）
 dshconsole/adopt.py              从「别的安装」的 bin.js 反推 harness 并写回 config.json

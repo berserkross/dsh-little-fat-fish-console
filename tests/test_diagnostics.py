@@ -99,7 +99,7 @@ class ProbeReportTests(unittest.TestCase):
                               phone_open=False, ts_ip="100.1.2.3", lan_ips=["10.0.0.2"],
                               notes=["端口被占用"])
         text = diagnostics.probe_report(None, state)
-        self.assertIn("异常（端口被占用）", text)
+        self.assertIn("阶段：异常", text)
         self.assertIn("说明：端口被占用", text)
 
     def test_with_data_it_lists_each_timing_and_the_raw_output(self):
