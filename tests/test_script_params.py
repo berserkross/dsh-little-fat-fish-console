@@ -43,6 +43,7 @@ class ScriptParamTests(unittest.TestCase):
             ["--trusted-host", "127.0.0.1:3080", "--trusted-host", "valkiriya.tail679d87.ts.net"],
             "C:/logs/dsh-web.stdout.log", "C:/logs/dsh-web.stderr.log", "C:/h/.dsh")
         for piece in ("Start-Process", "'web'", "'--no-open'", "'--port', '3080'",
+                      f"'--max-old-space-size={dsh_gui.NODE_HEAP_MB}'",
                       "--trusted-host", "valkiriya.tail679d87.ts.net",
                       "dsh-web.stdout.log", "dsh-web.stderr.log", "-WindowStyle Hidden",
                       "$env:DSH_HOME='C:/h/.dsh'"):

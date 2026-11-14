@@ -53,6 +53,8 @@ _APP = None                        # 当前窗口实例：未捕获异常写日�
 MAX_LOG_LINES = 2000               # 日志框行数上限：超过就从顶部滚动丢弃旧行
 LOG_POLL_INTERVAL = 0.4            # 跟随真实日志的轮询间隔（秒，≥0.3，不许 busy loop）
 STATUS_TTL = 3.0                   # 状态缓存：连点刷新不重复扫描，手动刷新穿透
+NODE_HEAP_MB = 1536                # node 堆上限（MB）：默认上限按内存给到 4 GB，DSH 会一路涨到
+                                   # 2 GB 再被系统换页；封到 1.5 GB 让它早点 GC，别把机器拖进换页。
 
 # ---------------- 主题（DeepSeek 蓝） ----------------
 # 配色 / 尺寸 / 五态样式集中在 dshconsole/ui_theme.py，上面 import 已带进本模块作用域。
@@ -188,7 +190,8 @@ def build_direct_start_command(node, bin_js, harness, trusted, log_out, log_err,
     --trusted-host 由调用方传进来，脚本那一版从来不传，重启出来的 DSH 认不得 tailnet 域名，
     手机访问直接 401。日志清空不在命令行里做 —— 那一步必须能失败上报，见 truncate_logs()。
     """
-    argv = [str(bin_js), "web", "--no-open", "--port", str(PORT)] + list(trusted)
+    argv = ([f"--max-old-space-size={NODE_HEAP_MB}", str(bin_js), "web", "--no-open",
+             "--port", str(PORT)] + list(trusted))
     quoted = ", ".join("'" + str(item) + "'" for item in argv)
     prefix = ""
     if dsh_home:
@@ -266,17 +269,39 @@ def token_suffix(url: str) -> str:
     return url.split("token=", 1)[1] if "token=" in url else url
 
 
+# token 里会出现 + / = 之类的字符，字符类必须放开：早先的 [A-Za-z0-9_\-]+ 会把真
+# token 截断，3081 于是永远跳一把残缺的钥匙（实测过，表现为每次重启都 401）。
+TOKEN_LINE = rf"dsh web: (http://127\.0\.0\.1:{PORT}/\?token=[^\s\"'<>]+)"
+
+
+def token_logs() -> "list[Path]":
+    """token 可能落在不止一份日志里，两处都要看。
+
+    控制台自己拉起 DSH 时写 TOKEN_LOG（harness 目录）；别的会话用 dsh-power-xc 的
+    restart_harness 重启时，它在 RUNTIME_DIR 下另写 dsh-web.log
+    （dsh-power-xc/lib/index.js:297 的 serverLog），TOKEN_LOG 从此停更 —— 只认前者
+    就等于拿一把死钥匙去开门，3081 会一直只回提示页。
+    """
+    paths = [TOKEN_LOG] if TOKEN_LOG is not None else []
+    home = getattr(CFG, "dsh_home", None)
+    if home is not None:
+        paths.append(Path(home) / "dsh-web.log")
+    return paths
+
+
 def token_url() -> str | None:
-    if TOKEN_LOG is None:
-        return None
-    try:
-        text = TOKEN_LOG.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    # token 里会出现 + / = 之类的字符，字符类必须放开：早先的 [A-Za-z0-9_\-]+ 会把
-    # 真 token 截断，3081 于是永远跳一把残缺的钥匙（实测过，表现为每次重启都 401）。
-    m = re.search(rf"dsh web: (http://127\.0\.0\.1:{PORT}/\?token=[^\s\"'<>]+)", text)
-    return m.group(1) if m else None
+    """取最新写入的那份日志的末条 token；读不到的文件跳过，不猜。"""
+    best = None                      # (mtime, url)
+    for path in token_logs():
+        try:
+            mtime = path.stat().st_mtime
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        found = re.findall(TOKEN_LINE, text)
+        if found and (best is None or mtime > best[0]):
+            best = (mtime, found[-1])
+    return best[1] if best else None
 
 
 
