@@ -245,6 +245,7 @@ DSHConsole.spec                  PyInstaller 打包描述（onefile、console=Fa
 version_info.txt                 PE 版本资源的唯一源头（版本号只在这里定义）
 DeepSeekChan [256x256].ico       窗口与 exe 图标
 docs/build-and-signing.md        实测构建记录、版本信息与签名方案
+docs/history/                    历史作业记录与交接文档（只作参考，不代表当前行为）
 .github/workflows/check.yml      CI：依赖安装 + 文档检查 + 语法检查 + 单元测试 + 打包校验
 LICENSE                          MIT 许可证
 SECURITY.md                      漏洞上报方式与预期行为

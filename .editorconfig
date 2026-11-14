@@ -1,0 +1,19 @@
+# 统一换行与编码：这个仓库曾在 PowerShell 5.1 上栽过跟头——
+# .ps1 带中文却丢了 BOM，会被按 ANSI 解码，报「参数列表中缺少 ')'」。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.ps1]
+# PowerShell 5.1 读带中文的脚本必须有 BOM，别让编辑器「帮」你去掉。
+charset = utf-8-bom
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.yml]
+indent_size = 2
