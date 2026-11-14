@@ -238,3 +238,47 @@ Get-FileHash dist\DSHConsole.exe -Algorithm SHA256
 - **签名流程本身**：没有证书，第五节的命令全部未执行过；命令写法依据 `Set-AuthenticodeSignature` /
   `New-SelfSignedCertificate` 的文档，不是实测输出。
 - **杀毒软件误报**：PyInstaller onefile 产物常被启发式引擎误判，本机未做多引擎扫描。
+
+## 七、发版顺序：先 Release，再 push
+
+这条顺序不是风格问题，是 CI 会不会红的问题。
+
+`check.yml` 只有三个触发面：`push`、`pull_request`、`workflow_dispatch` —— **建 Release 不在其中**。
+而 `scripts/check_docs.py` 的 Release 闸门会拿 README 的「当前版本」去查 `releases/tags/v<version>`：
+查不到就整条 CI 失败，报「Release vX.Y.Z 不存在：README 的「当前版本」应指向一个真实 Release」。
+
+2026-11-15 发 2.4.0 时就踩了这条：先 push、后发 Release，push 触发的两次 run 全红（18 秒 / 27 秒），
+而且都停在 Docs consistency 这一步 —— 后面的 GUI 自检、单元测试、打包校验**根本没跑**，
+看起来像代码坏了，其实只是发布顺序倒过来了。
+
+本地跑 `python scripts/check_docs.py` 看不到这个问题：没有 `GITHUB_TOKEN` 时该检查直接跳过，
+所以「本地绿」不代表「CI 绿」，这也是那次误判的直接原因。
+
+### 固定顺序
+
+1. 改版本四处：`dshconsole/__init__.py`（`__version__`）、`version_info.txt`（filevers/prodvers 与两个字符串）、
+   README 的「当前版本」横幅、`CHANGELOG.md` 新节。
+2. 构建 + 签名（第二～五节），确认 `Get-AuthenticodeSignature` 为 `Valid`、PE 版本号对得上。
+3. **先发 Release**，把签名后的 exe 作为资产：
+
+```powershell
+gh release create vX.Y.Z dist\DSHConsole.exe --target main `
+  --title 'vX.Y.Z — <一句话主题>' --notes-file <说明文件>
+```
+
+4. **再 push**。这次 push 触发的 CI 一开始就能查到 Release，一步到位。
+
+### 已经先 push 了怎么补救
+
+不用改代码，补两步即可：
+
+```powershell
+gh release create vX.Y.Z dist\DSHConsole.exe --target main --title '...' --notes-file <说明文件>
+gh workflow run check.yml --ref main          # 手动补跑一次，让闸门重新查 Release
+gh run watch <run-id> --exit-status           # 等它绿；Build 步骤约一分钟
+```
+
+两个容易忽略的细节：
+
+- `--target main` 会以当前 main 建同名 tag；tag 已存在时改用 `--verify-tag` 或直接引用已有 tag。
+- Release 建好后闸门还有下半段：若 Release 带了 exe，README 与本节都不得再声称「不随 Release 分发可执行文件」或「产物没有签名」——脚本按字面串匹配，新写法要绕开那几句。
