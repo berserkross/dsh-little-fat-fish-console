@@ -15,7 +15,7 @@
   powershell -ExecutionPolicy Bypass -File .\scripts\sign-self-signed.ps1 -TrustLocal
 #>
 param(
-    [string]$Exe = (Join-Path $PSScriptRoot '..\dist\DSHConsole.exe'),
+    [string]$Exe = (Join-Path $PSScriptRoot '..\dist\DSHConsole\DSHConsole.exe'),
     [string]$Subject = 'CN=YANG TIANRUI',
     [string]$CerPath = (Join-Path $PSScriptRoot '..\certs\dsh-console-selfsigned.cer'),
     [string]$TimestampServer = 'http://timestamp.digicert.com',

@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-11-22
+
+### 修复
+
+- **双击 exe 毫无反应（真凶在打包形态）**：2026-11-22 起，onefile 产物在本机启动时停在
+  PyInstaller 引导层，弹「Could not create temporary directory!」，日志一行不写。现场证据：
+  换 `TEMP` 指向、`Start-Process` 与 bash 直接启动都失败；同机现场编的 8 MB hello onefile
+  却能正常解包 ⇒ 环境能建临时目录，是大产物解包到 `%TEMP%\_MEIxxxx` 那一步被拦（本机
+  装有腾讯电脑管家，Defender 已让位）。
+- **打包改为 onedir**：`DSHConsole.spec` 从 onefile 改成 `EXE(exclude_binaries=True)` +
+  `COLLECT`，产物是 `dist\DSHConsole\`（exe 约 6 MB + `_internal\`，整目录约 73 MB）。
+  启动不再写临时目录，双击即开；桌面快捷方式改指 `DSHConsole-app\DSHConsole.exe`。
+  分发形态随之变成 zip。
+
+### 变更
+
+- CI 的打包步骤改名为 `Build onedir app and check version resource`，校验路径改为
+  `dist\DSHConsole\DSHConsole.exe`；新增 `tests/test_packaging.py` 盯着 spec 别再退回 onefile。
+
 ## [2.4.0] - 2026-11-15
 
 ### 新增

@@ -6,14 +6,27 @@
 > **只想在自己机器上签名**（个人名义、自签名、免费）：看 [self-signed-local.md](self-signed-local.md) +
 > `scripts/sign-self-signed.ps1`。那是本机完整性检查，不是发布级凭证。
 
+## 零、为什么是 onedir 而不是 onefile
+
+2026-11-22 起，本机的 onefile 产物**双击毫无反应**：PyInstaller 引导层弹出
+「Could not create temporary directory!」，日志一行不写（说明死在 Python 代码之前）。
+现场证据：同样的 32 MB exe 换 `TEMP` 指向、用 `Start-Process` / 直接 bash 启动都失败；
+同一台机器现场编一个 8 MB 的 hello onefile 却能正常解包运行 ⇒ 环境能建临时目录，
+是这份大产物解包到 `%TEMP%\_MEIxxxx` 的那一步被拦。本机装着腾讯电脑管家（Defender 已让位，
+`Get-MpComputerStatus` 的 `RealTimeProtectionEnabled=False`），最合理的解释是杀软对
+「大体积自解压 + 随机名目录」的钩子。
+
+结论：**改成 onedir**（`COLLECT`）。onedir 启动不写临时目录，双击即开；代价是分发形态从
+单个 exe 变成「一个目录」（约 73 MB，必须打 zip 才能发 Release）。
+
 ## 一、实测产物
 
 | 项 | 实测值 |
 |---|---|
-| 产物路径 | `C:\Users\Ibash\Documents\Codex\apps\dsh-console\dist\DSHConsole.exe` |
+| 产物路径 | `C:\Users\Ibash\Documents\Codex\apps\dsh-console\dist\DSHConsole\DSHConsole.exe`（同目录 `_internal\` 是必需件） |
 | 大小 | 未签名 32,172,230 B；自签名后 32,179,368 B（签名块约 +7 KB，每次签名略有浮动） |
 | SHA256 | 自签名后 `930956ABF15D410BBF0FA01C125CD0B6B00247FE8CF4570D91A0C5B7E5DB38CB`（同一份源码未签名时为 `3C3B70B7C270C7FA74CE225E53E8E798B011DD4EB366750029C2B86599783C9C`） |
-| 形态 | PyInstaller **onefile**（`dist\` 下只有这一个 exe，无 `_internal\` 目录；引导器 `runw.exe`） |
+| 形态 | PyInstaller **onedir**（`dist\DSHConsole\`：exe + `_internal\`；不写 `%TEMP%`，见第零节） |
 | 界面子系统 | PE `subsystem=2`（GUI，双击不弹控制台窗） |
 | 结构 | `machine=0x8664`（x64）、7 个段、`.rsrc` 72,896 B |
 | 压缩 | `upx=False`，二进制内 `UPX!` 命中 0 次 |
@@ -99,7 +112,7 @@ exe = EXE(
 版本资源五项：
 
 ```powershell
-(Get-Item dist\DSHConsole.exe).VersionInfo |
+(Get-Item dist\DSHConsole\DSHConsole.exe).VersionInfo |
   Format-List FileVersion, ProductVersion, CompanyName, FileDescription, LegalCopyright
 ```
 
@@ -115,9 +128,9 @@ LegalCopyright  : MIT License · Copyright (c) 2026 YANG TIANRUI
 拿退出码，自检结论另外写进 `%TEMP%` 的标记文件）：
 
 ```powershell
-$p = Start-Process -FilePath dist\DSHConsole.exe -ArgumentList '--selftest' -Wait -PassThru
+$p = Start-Process -FilePath dist\DSHConsole\DSHConsole.exe -ArgumentList '--selftest' -Wait -PassThru
 $p.ExitCode; Get-Content "$env:TEMP\dsh-gui-selftest.txt"
-$p = Start-Process -FilePath dist\DSHConsole.exe -ArgumentList '--stop-selftest' -Wait -PassThru
+$p = Start-Process -FilePath dist\DSHConsole\DSHConsole.exe -ArgumentList '--stop-selftest' -Wait -PassThru
 $p.ExitCode; Get-Content "$env:TEMP\dsh-stop-selftest.txt"
 ```
 
@@ -150,7 +163,7 @@ queue_idle=True pending=[]
 66352, 70402, 70384, 1, 'b', 'DeepSeekChan [256x256].ico'
 ```
 
-清单用 `py -3.11 -m PyInstaller.utils.cliutils.archive_viewer dist\DSHConsole.exe -l` 取。
+清单用 `py -3.11 -m PyInstaller.utils.cliutils.archive_viewer dist\DSHConsole\DSHConsole.exe -l` 取。
 
 ## 五、签名
 
@@ -173,7 +186,7 @@ Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert
 ```powershell
 $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
         Where-Object { $_.Subject -like '*你的公司名*' } | Select-Object -First 1
-Set-AuthenticodeSignature -FilePath dist\DSHConsole.exe -Certificate $cert `
+Set-AuthenticodeSignature -FilePath dist\DSHConsole\DSHConsole.exe -Certificate $cert `
     -TimestampServer http://timestamp.digicert.com -HashAlgorithm SHA256
 ```
 
@@ -184,7 +197,7 @@ Set-AuthenticodeSignature -FilePath dist\DSHConsole.exe -Certificate $cert `
 验证：
 
 ```powershell
-Get-AuthenticodeSignature dist\DSHConsole.exe | Format-List Status, StatusMessage, SignerCertificate
+Get-AuthenticodeSignature dist\DSHConsole\DSHConsole.exe | Format-List Status, StatusMessage, SignerCertificate
 ```
 
 预期形态：
@@ -203,7 +216,7 @@ Get-AuthenticodeSignature dist\DSHConsole.exe | Format-List Status, StatusMessag
 $c = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Ibash (test only)" `
        -KeyUsage DigitalSignature -CertStoreLocation Cert:\CurrentUser\My `
        -NotAfter (Get-Date).AddYears(1)
-Set-AuthenticodeSignature -FilePath dist\DSHConsole.exe -Certificate $c `
+Set-AuthenticodeSignature -FilePath dist\DSHConsole\DSHConsole.exe -Certificate $c `
        -TimestampServer http://timestamp.digicert.com -HashAlgorithm SHA256
 # 让本机把它当可信根（只对这台机器、这个用户生效）
 $c | Export-Certificate -FilePath "$env:TEMP\dsh-test.cer" | Out-Null
@@ -227,17 +240,18 @@ v2.2.5 起 Release 直接附带用自签名证书签名的 exe，但证书根只
 SHA256 写进 Release 说明，让对方自己校验：
 
 ```powershell
-Get-FileHash dist\DSHConsole.exe -Algorithm SHA256
+Get-FileHash dist\DSHConsole\DSHConsole.exe -Algorithm SHA256
 ```
 
 ## 六、还没有验证的
 
 - **干净机器上是否需要 VC++ 运行库**：本机装了 VS 运行库，测不出来。Python 3.11 官方安装包自带的
-  `vcruntime140.dll` 会被 PyInstaller 打进 onefile，理论上不需要另装；但没有在全新系统上验过。
+  `vcruntime140.dll` 会被 PyInstaller 打进 `_internal\`，理论上不需要另装；但没有在全新系统上验过。
 - **未签名包在他人机器上的 SmartScreen 表现**：只有本机口径（点开即要求"仍要运行"），没有真实样本。
 - **签名流程本身**：没有证书，第五节的命令全部未执行过；命令写法依据 `Set-AuthenticodeSignature` /
   `New-SelfSignedCertificate` 的文档，不是实测输出。
-- **杀毒软件误报**：PyInstaller onefile 产物常被启发式引擎误判，本机未做多引擎扫描。
+- **杀毒软件钩子（已实测到一次）**：2026-11-22 本机的 onefile 产物在解包临时目录时被拦（见第零节），
+  onedir 绕过了这一步；但没做过多引擎扫描，别的机器上仍可能有误报。
 
 ## 七、发版顺序：先 Release，再 push
 
@@ -262,7 +276,7 @@ Get-FileHash dist\DSHConsole.exe -Algorithm SHA256
 3. **先发 Release**，把签名后的 exe 作为资产：
 
 ```powershell
-gh release create vX.Y.Z dist\DSHConsole.exe --target main `
+gh release create vX.Y.Z dist\DSHConsole-*.zip --target main `
   --title 'vX.Y.Z — <一句话主题>' --notes-file <说明文件>
 ```
 
@@ -273,7 +287,7 @@ gh release create vX.Y.Z dist\DSHConsole.exe --target main `
 不用改代码，补两步即可：
 
 ```powershell
-gh release create vX.Y.Z dist\DSHConsole.exe --target main --title '...' --notes-file <说明文件>
+gh release create vX.Y.Z dist\DSHConsole-*.zip --target main --title '...' --notes-file <说明文件>
 gh workflow run check.yml --ref main          # 手动补跑一次，让闸门重新查 Release
 gh run watch <run-id> --exit-status           # 等它绿；Build 步骤约一分钟
 ```
