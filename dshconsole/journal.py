@@ -17,11 +17,29 @@ ROTATE_BYTES = 1024 * 1024        # 一条日志换一份：够翻上一次出�
 TAIL_LINES = 8                    # 失败时贴进界面的行数
 
 _LOCK = threading.Lock()
+_LAST_ERROR: str | None = None      # 上一次写失败的原因；None＝上一次是好的
 
 
 def path() -> Path:
     """%APPDATA%\\dsh-console\\console.log（跟着 config.json 走）。"""
     return config.config_path().parent / LOG_NAME
+
+
+def last_error() -> str | None:
+    """主位置上一次写失败的原因；写成功过就回到 None。"""
+    return _LAST_ERROR
+
+
+def fallback_path() -> Path:
+    """主位置写不进去时的备用落点：%LOCALAPPDATA%\dsh-console\console.log。
+
+    主位置失败多半是权限/被占用，换另一棵目录树通常还能写：证据抄一份过去，
+    两处都失败才算是真没救（那时界面会提醒一次）。
+    """
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        return Path(base) / config.APP_NAME / LOG_NAME
+    return path()
 
 
 def _stamp() -> str:
@@ -42,19 +60,40 @@ def _rotate(target: Path) -> None:
         pass
 
 
-def write(text: object, target: Path | None = None) -> None:
-    """追加一行。写不进去就静默放弃 —— 这是旁证，不是主路径。"""
+def _append_to(dest: Path, line: str) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() and dest.stat().st_size + len(line.encode("utf-8")) > ROTATE_BYTES:
+        _rotate(dest)
+    with open(dest, "a", encoding="utf-8", errors="replace") as handle:
+        handle.write(line)
+
+
+def write(text: object, target: Path | None = None) -> bool:
+    """追加一行。
+
+    返回 True＝主位置写成功；False＝主位置失败（原因记在 last_error()，此时会尽力
+    抄到 fallback_path()）。日志失败永远不抛给调用方：它是旁证，不是主路径。
+
+    返回值唯一的用途是让调用方有机会把失败讲出来 —— 静默放弃过，
+    结果事发现场一行证据都没有。
+    """
+    global _LAST_ERROR
     dest = target or path()
     line = _format(text)
     with _LOCK:
         try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if dest.exists() and dest.stat().st_size + len(line.encode("utf-8")) > ROTATE_BYTES:
-                _rotate(dest)
-            with open(dest, "a", encoding="utf-8", errors="replace") as handle:
-                handle.write(line)
-        except OSError:
-            pass
+            _append_to(dest, line)
+        except OSError as exc:
+            _LAST_ERROR = f"{type(exc).__name__}: {exc}"
+            spare = fallback_path()
+            if spare != dest:
+                try:
+                    _append_to(spare, line)
+                except OSError:
+                    pass
+            return False
+        _LAST_ERROR = None
+    return True
 
 
 def tail_lines(source: Path | str | None, limit: int = TAIL_LINES) -> list[str]:

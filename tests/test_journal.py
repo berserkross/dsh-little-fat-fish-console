@@ -59,6 +59,44 @@ class JournalWriteTests(unittest.TestCase):
             journal.write("随便", target=bad)
 
 
+class JournalFailureTests(unittest.TestCase):
+    """主位置写不进去时：返回 False、原因留痕、证据改存备用位置。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.blocker = self.root / "blocked"
+        self.blocker.write_text("我是文件，不是目录", encoding="utf-8")
+        self.target = self.blocker / "console.log"      # 父级是文件：mkdir 必然失败
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_success_returns_true_and_clears_error(self):
+        good = self.root / "console.log"
+        self.assertTrue(journal.write("正常一行", target=good))
+        self.assertIsNone(journal.last_error())
+
+    def test_failure_returns_false_and_records_reason(self):
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(self.root / "local")}):
+            self.assertFalse(journal.write("写不进去", target=self.target))
+        self.assertTrue(journal.last_error(), "失败原因不能是空的，否则界面只能说「原因未知」")
+
+    def test_evidence_moves_to_fallback(self):
+        local = self.root / "local"
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
+            journal.write("备用位置也要有", target=self.target)
+            spare = journal.fallback_path()
+        self.assertEqual(spare, local / "dsh-console" / journal.LOG_NAME)
+        self.assertIn("备用位置也要有", spare.read_text(encoding="utf-8"))
+
+    def test_no_fallback_when_localappdata_missing(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LOCALAPPDATA", None)
+            self.assertEqual(journal.fallback_path(), journal.path())
+            self.assertFalse(journal.write("两处同一路径", target=self.target))
+
+
 class JournalTailTests(unittest.TestCase):
     def test_tail_returns_last_nonempty_lines(self):
         with tempfile.TemporaryDirectory() as tmp:

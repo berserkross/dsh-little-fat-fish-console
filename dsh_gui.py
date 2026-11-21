@@ -1384,6 +1384,12 @@ class ConsoleApp(ctk.CTk):
             pass
     # ---------------- helpers ----------------
     def logline(self, msg: str) -> None:
+        self._emit_log_line(msg)
+        if journal.write(msg) is False:
+            self._warn_journal_once()
+
+    def _emit_log_line(self, msg: str) -> None:
+        """把一行写进日志框并刷新从属控件（不落盘）。"""
         self.log.configure(state="normal")
         self.log.insert("end", time.strftime("[%H:%M:%S] ") + msg + "\n")
         self._clear_log_selection()
@@ -1391,8 +1397,20 @@ class ConsoleApp(ctk.CTk):
         self._sync_log_rows()
         self._scroll_log_to_end()
         self._mirror_log()
-        journal.write(msg)
         self.log.configure(state="disabled")
+
+    def _warn_journal_once(self) -> None:
+        """落盘日志写不进去时，界面里至少要说一次。
+
+        以前 journal.write 静默吞掉 OSError：界面看着一切正常，事后却连一行
+        证据都没有（2.4.0 那次「exe 秒退」就卡在这里）。现在只喊一次，不刷屏。
+        """
+        if getattr(self, "_journal_warned", False):
+            return
+        self._journal_warned = True
+        self._emit_log_line(
+            f"落盘日志写不进 {journal.path()}：{journal.last_error() or '原因未知'}"
+            f"（已在改存 {journal.fallback_path()}；本次运行只提醒一次）")
 
     def log_async(self, msg: str) -> None:
         """线程安全写日志：委托回 Tk 主线程，避免跨线程操作控件。
@@ -1415,8 +1433,8 @@ class ConsoleApp(ctk.CTk):
             self.log.configure(state="normal")
             for line in lines:
                 self.log.insert("end", prefix + line + "\n")
-                if persist:
-                    journal.write(prefix + line)  # 界面会被清空，落盘那份才是事后能查的
+                if persist and journal.write(prefix + line) is False:
+                    self._warn_journal_once()  # 界面会被清空，落盘那份才是事后能查的
             self._trim_log(limit)
             self._clear_log_selection()
             self._sync_log_empty(False)

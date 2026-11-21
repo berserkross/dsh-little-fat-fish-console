@@ -153,6 +153,43 @@ class JournalFilterTests(unittest.TestCase):
         self.assertIn("重启②", jw[0])
 
 
+class JournalFailureVisibilityTests(unittest.TestCase):
+    """落盘日志写不进去时，界面必须说一次 —— 静默失败等于事发现场零证据。"""
+
+    def _app(self):
+        app = FakeApp()
+        app.log = mock.MagicMock()
+        for name in ("_trim_log", "_clear_log_selection", "_sync_log_empty",
+                     "_sync_log_rows", "_scroll_log_to_end", "_mirror_log"):
+            setattr(app, name, mock.Mock())
+        # FakeApp 不是 ConsoleApp 的子类：这两个方法得显式绑上真身
+        app._emit_log_line = lambda msg: dsh_gui.ConsoleApp._emit_log_line(app, msg)
+        app._warn_journal_once = lambda: dsh_gui.ConsoleApp._warn_journal_once(app)
+        return app
+
+    def _rows(self, app):
+        return [call.args[1] for call in app.log.insert.call_args_list if len(call.args) > 1]
+
+    def test_warns_once_when_journal_refuses(self):
+        app = self._app()
+        with mock.patch.object(dsh_gui.journal, "write", lambda text, target=None: False), \
+             mock.patch.object(dsh_gui.journal, "last_error",
+                               lambda: "PermissionError: [Errno 13] 拒绝访问"), \
+             mock.patch.object(dsh_gui.journal, "fallback_path",
+                               lambda: dsh_gui.journal.path().with_name("spare.log")):
+            dsh_gui.ConsoleApp.logline(app, "第一行")
+            dsh_gui.ConsoleApp.logline(app, "第二行")
+        warnings = [row for row in self._rows(app) if "落盘日志写不进" in str(row)]
+        self.assertEqual(len(warnings), 1, "只许提醒一次，不能每行刷屏")
+        self.assertIn("PermissionError", str(warnings[0]))
+
+    def test_silent_when_journal_works(self):
+        app = self._app()
+        with mock.patch.object(dsh_gui.journal, "write", lambda text, target=None: True):
+            dsh_gui.ConsoleApp.logline(app, "一切正常")
+        self.assertFalse([row for row in self._rows(app) if "落盘日志写不进" in str(row)])
+
+
 class QuitJournalTests(unittest.TestCase):
     """_quit 必须留一行「正在退出」：没有这行才说明进程是被硬杀的。"""
 
