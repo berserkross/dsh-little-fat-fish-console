@@ -15,7 +15,17 @@ class JournalPathTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "config.json"
             with mock.patch.dict(os.environ, {"DSH_CONSOLE_CONFIG": str(cfg)}):
-                self.assertEqual(journal.path(), Path(tmp) / journal.LOG_NAME)
+                with mock.patch.object(journal.sys, "frozen", False, create=True):
+                    self.assertEqual(journal.path(), Path(tmp) / journal.LOG_NAME)
+
+    def test_user_install_is_primary_when_frozen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exe = root / "app" / "DSHConsole.exe"
+            with mock.patch.object(journal.sys, "frozen", True, create=True), \
+                 mock.patch.object(journal.sys, "executable", str(exe)), \
+                 mock.patch.object(Path, "home", return_value=root):
+                self.assertEqual(journal.path(), exe.parent / "logs" / journal.LOG_NAME)
 
 
 class JournalWriteTests(unittest.TestCase):
@@ -89,6 +99,49 @@ class JournalFailureTests(unittest.TestCase):
             spare = journal.fallback_path()
         self.assertEqual(spare, local / "dsh-console" / journal.LOG_NAME)
         self.assertIn("备用位置也要有", spare.read_text(encoding="utf-8"))
+
+    def test_user_install_supplies_last_resort(self):
+        exe = self.root / "app" / "DSHConsole.exe"
+        with mock.patch.object(journal.sys, "frozen", True, create=True), \
+             mock.patch.object(journal.sys, "executable", str(exe)), \
+             mock.patch.object(Path, "home", return_value=self.root), \
+             mock.patch.object(journal, "fallback_path", return_value=self.blocker / "local.log"):
+            self.assertFalse(journal.write("启动", target=self.target))
+        actual = exe.parent / "logs" / journal.LOG_NAME
+        text = actual.read_text(encoding="utf-8")
+        self.assertIn("启动", text)
+        self.assertIn("回退原因", text)
+        self.assertIn("FileExistsError", text)
+        self.assertIn(str(actual).casefold(), journal.last_error().casefold())
+
+    def test_install_failure_falls_back_to_config_location(self):
+        cfg = self.root / "cfg" / "config.json"
+        exe = self.root / "app" / "DSHConsole.exe"
+        with mock.patch.dict(os.environ, {
+                "DSH_CONSOLE_CONFIG": str(cfg),
+                "LOCALAPPDATA": str(self.root / "local"),
+             }), \
+             mock.patch.object(journal.sys, "frozen", True, create=True), \
+             mock.patch.object(journal.sys, "executable", str(exe)), \
+             mock.patch.object(Path, "home", return_value=self.root), \
+             mock.patch.object(journal, "_append_to", side_effect=self._append_when_writable):
+            self.assertFalse(journal.write("回退到配置目录"))
+        self.assertIn("回退到配置目录", (cfg.parent / journal.LOG_NAME).read_text(encoding="utf-8"))
+
+    def _append_when_writable(self, dest, line):
+        if dest.name == "console.log" and dest.parent.name == "logs":
+            raise PermissionError("安装目录不可写")
+        if dest == journal.fallback_path():
+            raise PermissionError("备用目录不可写")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "a", encoding="utf-8") as handle:
+            handle.write(line)
+
+    def test_all_denials_are_reported(self):
+        with mock.patch.object(journal, "fallback_path", return_value=self.blocker / "local.log"):
+            self.assertFalse(journal.write("启动", target=self.target))
+        self.assertIn("local.log", journal.last_error())
+        self.assertIn("未能落盘", journal.last_error())
 
     def test_no_fallback_when_localappdata_missing(self):
         # 顺手把 config 也关进临时目录：否则 fallback 会退回真实 %APPDATA%，测试往用户目录写脏行

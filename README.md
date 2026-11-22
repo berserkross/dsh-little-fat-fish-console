@@ -6,7 +6,8 @@
 DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双击 exe 或运行脚本即可打开窗口，
 用来在本机启动 / 停止 DSH Web 服务、把服务临时开给手机访问、以及随时看状态。
 
-> **当前版本 2.4.2**（2026-11-22）：投递形态从 onefile 换成 **onedir**——本机 2026-11-22 起，
+> **当前版本 2.4.3**（2026-11-22）：窗口初始化前后各留一条启动记录。用户目录内的 onedir 安装优先把日志写到安装目录下的 `logs/console.log`，AppData 作为后续回退。
+> 2.4.2（2026-11-22）：投递形态从 onefile 换成 **onedir**——本机 2026-11-22 起，
 > onefile 每次启动都停在 PyInstaller 引导层弹「Could not create temporary directory!」
 > （解包到 %TEMP%\_MEIxxxx 失败，双击毫无反应，也不写一行日志）；改成目录形态后不再写
 > 临时目录，双击即开。快捷方式指向 DSHConsole-app\DSHConsole.exe。
@@ -15,7 +16,7 @@ DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双�
 > `restart_harness` 改道后 3081 不再拿死钥匙；node 堆封到 1.5 GB，半死（端口在听不应答）
 > 判成「异常」；工具组新增「免 token 自动开」开关。
 > 2.3.0（2026-11-12）：重启链路可复盘——控制台自己的日志落盘到
-> `%APPDATA%\dsh-console\console.log`（1 MB 轮换、token 脱敏、退出留痕），启动/重启改为
+> 控制台日志（1 MB 轮换、token 脱敏、退出留痕），启动/重启改为
 > 轮询播报并直贴 DSH 的 stderr 尾巴，另修掉「一条读不到命令行的进程就让状态灯永远停在未知」。
 > 2.2.6（2026-11-07）：根治「假活」闭环——端口转发残留不再让启动按钮误判，停止 DSH 后
 > 自动清理转发残留，启动/重启守卫不再撞 EADDRINUSE，进程判定收紧为「读不到就报未知」；
@@ -268,7 +269,7 @@ python dsh_gui.py --selftest        # 主窗口 + 大环 / 主按钮 / 抽屉 / 
 python dsh_gui.py --stop-selftest   # 「停止」整条链路（假进程 + 注入端口探测）
 ```
 
-共 519 个用例。测试只用标准库，用 `tempfile` 造假目录树，不依赖本机任何真实安装路径；两个自检
+共 524 个用例。测试只用标准库，用 `tempfile` 造假目录树，不依赖本机任何真实安装路径；两个自检
 同样把进程与端口探测全部注入（不碰真实 DSH 进程、也不要求 3080 空闲），所以在 CI 上可跑。
 GUI 用例需要 `customtkinter` / `pillow` / `qrcode`，没装时会跳过；托盘用例用假 pystray，
 不需要真的托盘环境。

@@ -1384,8 +1384,9 @@ class ConsoleApp(ctk.CTk):
             pass
     # ---------------- helpers ----------------
     def logline(self, msg: str) -> None:
+        written = journal.write(msg)
         self._emit_log_line(msg)
-        if journal.write(msg) is False:
+        if written is False:
             self._warn_journal_once()
 
     def _emit_log_line(self, msg: str) -> None:
@@ -1409,8 +1410,7 @@ class ConsoleApp(ctk.CTk):
             return
         self._journal_warned = True
         self._emit_log_line(
-            f"落盘日志写不进 {journal.path()}：{journal.last_error() or '原因未知'}"
-            f"（已在改存 {journal.fallback_path()}；本次运行只提醒一次）")
+            f"落盘日志写不进主位置：{journal.last_error() or '原因未知'}（本次运行只提醒一次）")
 
     def log_async(self, msg: str) -> None:
         """线程安全写日志：委托回 Tk 主线程，避免跨线程操作控件。
@@ -3029,7 +3029,9 @@ def main() -> int:
         HARNESS, TOKEN_LOG, PORT = CFG.harness, CFG.token_log, CFG.port
     if not ensure_ready():
         return 1
+    journal.write("准备创建控制台窗口。")
     app = ConsoleApp()
+    journal.write("控制台窗口已创建。")
     _APP = app
     errors.install(_report)      # sys / threading 两处钩子；Tk 回调那处由 app 自己挂
     if guard.acquired is None:

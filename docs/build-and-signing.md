@@ -273,14 +273,17 @@ Get-FileHash dist\DSHConsole\DSHConsole.exe -Algorithm SHA256
 1. 改版本四处：`dshconsole/__init__.py`（`__version__`）、`version_info.txt`（filevers/prodvers 与两个字符串）、
    README 的「当前版本」横幅、`CHANGELOG.md` 新节。
 2. 构建 + 签名（第二～五节），确认 `Get-AuthenticodeSignature` 为 `Valid`、PE 版本号对得上。
-3. **先发 Release**，把签名后的 exe 作为资产：
+3. 将已测试的版本提交推到发布分支。用该提交的 SHA 创建 Release，上传签名后的 onedir ZIP。
 
 ```powershell
-gh release create vX.Y.Z dist\DSHConsole-*.zip --target main `
+$revision = git rev-parse HEAD
+git push origin HEAD:refs/heads/release/vX.Y.Z
+if ($LASTEXITCODE) { throw "发布分支推送失败" }
+gh release create vX.Y.Z dist\DSHConsole-X.Y.Z.zip --target $revision `
   --title 'vX.Y.Z — <一句话主题>' --notes-file <说明文件>
 ```
 
-4. **再 push**。这次 push 触发的 CI 一开始就能查到 Release，一步到位。
+4. 核对标签、ZIP 与本地文档闸门后执行 `git push origin main`。此时 CI 已能查询到该版本的 Release。
 
 ### 已经先 push 了怎么补救
 

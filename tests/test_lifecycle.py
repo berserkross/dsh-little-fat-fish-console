@@ -183,6 +183,14 @@ class JournalFailureVisibilityTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1, "只许提醒一次，不能每行刷屏")
         self.assertIn("PermissionError", str(warnings[0]))
 
+    def test_event_is_persisted_before_widget_update(self):
+        app = self._app()
+        app._emit_log_line = mock.Mock(side_effect=RuntimeError("窗口已销毁"))
+        with mock.patch.object(dsh_gui.journal, "write") as write:
+            with self.assertRaises(RuntimeError):
+                dsh_gui.ConsoleApp.logline(app, "启动事件")
+            write.assert_called_once_with("启动事件")
+
     def test_silent_when_journal_works(self):
         app = self._app()
         with mock.patch.object(dsh_gui.journal, "write", lambda text, target=None: True):

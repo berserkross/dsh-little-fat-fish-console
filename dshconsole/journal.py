@@ -1,11 +1,13 @@
 """控制台自己的落盘日志：界面上那 2000 行滚动丢弃、窗口一关就没了，事后无从查起。
 
 只做三件事：带时间戳追加一行、长到 1 MB 换一份、任何失败都不许抛（日志写不进去
-不能反过来把界面搞崩）。位置与 config.json 同目录，测试用 DSH_CONSOLE_CONFIG 整体改道。
+不能反过来把界面搞崩）。源码运行写 config.json 同目录；用户目录内的打包版优先写安装
+目录下的 logs/console.log，避免 AppData 被安全软件拒绝后现场没有证据。
 """
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -20,9 +22,27 @@ _LOCK = threading.Lock()
 _LAST_ERROR: str | None = None      # 上一次写失败的原因；None＝上一次是好的
 
 
-def path() -> Path:
-    """%APPDATA%\\dsh-console\\console.log（跟着 config.json 走）。"""
+def configured_path() -> Path:
+    """跟随 config.json 的常规日志位置。"""
     return config.config_path().parent / LOG_NAME
+
+
+def install_path() -> Path | None:
+    """打包版位于用户目录时，exe 旁边的可写日志位置。"""
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        install = Path(sys.executable).resolve().parent
+        if install.is_relative_to(Path.home()):
+            return install / "logs" / LOG_NAME
+    except OSError:
+        pass
+    return None
+
+
+def path() -> Path:
+    """当前主落点：打包版优先安装目录，源码运行跟随 config.json。"""
+    return install_path() or configured_path()
 
 
 def last_error() -> str | None:
@@ -78,22 +98,46 @@ def write(text: object, target: Path | None = None) -> bool:
     结果事发现场一行证据都没有。
     """
     global _LAST_ERROR
-    dest = target or path()
+    primary = target or path()
     line = _format(text)
     with _LOCK:
-        try:
-            _append_to(dest, line)
-        except OSError as exc:
-            _LAST_ERROR = f"{type(exc).__name__}: {exc}"
-            spare = fallback_path()
-            if spare != dest:
-                try:
-                    _append_to(spare, line)
-                except OSError:
-                    pass
+        failures = []
+        for dest in _destinations(primary, include_configured=target is None):
+            try:
+                _append_to(dest, line)
+            except OSError as exc:
+                failures.append(f"{dest}（{type(exc).__name__}: {exc}）")
+                continue
+            if dest == primary:
+                _LAST_ERROR = None
+                return True
+            _LAST_ERROR = "；".join(failures) + f"。已改存 {dest}"
+            _append_failure_note(dest, failures)
             return False
-        _LAST_ERROR = None
-    return True
+        _LAST_ERROR = "；".join(failures) + "。本条未能落盘"
+        return False
+
+
+def _append_failure_note(dest: Path, failures: list[str]) -> None:
+    """把回退原因也写进最终落点，避免异常只存在于易失的界面日志里。"""
+    try:
+        _append_to(dest, _format("主日志位置写入失败；回退原因：" + "；".join(failures)))
+    except OSError:
+        # 原事件已经写进 dest；附注再失败也不能把主流程带崩，完整原因仍在 last_error()。
+        pass
+
+
+def _destinations(primary: Path, include_configured: bool = False):
+    yield primary
+    spare = fallback_path()
+    if spare != primary:
+        yield spare
+    install = install_path()
+    if install is not None and install not in (primary, spare):
+        yield install
+    configured = configured_path()
+    if include_configured and configured not in (primary, spare, install):
+        yield configured
 
 
 def tail_lines(source: Path | str | None, limit: int = TAIL_LINES) -> list[str]:
