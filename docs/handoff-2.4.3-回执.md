@@ -3,9 +3,11 @@
 - 日期：2026-11-22
 - 执行方：Codex
 - 仓库：`berserkross/dsh-little-fat-fish-console`
-- 发布提交：`acc9ce155be086ba5a263a63e8abbf4dbc3112f5`
+- 发布代码提交：`acc9ce155be086ba5a263a63e8abbf4dbc3112f5`
+- Release 标签目标：当前 main 上包含本回执的最终提交，可用 `git rev-parse v2.4.3` 核对
 - Release：https://github.com/berserkross/dsh-little-fat-fish-console/releases/tag/v2.4.3
-- CI：https://github.com/berserkross/dsh-little-fat-fish-console/actions/runs/44972239537
+- 代码 CI：https://github.com/berserkross/dsh-little-fat-fish-console/actions/runs/44972239537
+- 回执前最终 CI：https://github.com/berserkross/dsh-little-fat-fish-console/actions/runs/44973063419
 
 ## 一、逐项结论
 
