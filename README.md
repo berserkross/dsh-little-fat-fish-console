@@ -6,7 +6,7 @@
 DeepSeek Harness 的桌面图形界面（customtkinter · 蓝鲸主题）。双击 exe 或运行脚本即可打开窗口，
 用来在本机启动 / 停止 DSH Web 服务、把服务临时开给手机访问、以及随时看状态。
 
-> **当前版本 2.4.1**（2026-11-22）：投递形态从 onefile 换成 **onedir**——本机 2026-11-22 起，
+> **当前版本 2.4.2**（2026-11-22）：投递形态从 onefile 换成 **onedir**——本机 2026-11-22 起，
 > onefile 每次启动都停在 PyInstaller 引导层弹「Could not create temporary directory!」
 > （解包到 %TEMP%\_MEIxxxx 失败，双击毫无反应，也不写一行日志）；改成目录形态后不再写
 > 临时目录，双击即开。快捷方式指向 DSHConsole-app\DSHConsole.exe。
@@ -268,7 +268,7 @@ python dsh_gui.py --selftest        # 主窗口 + 大环 / 主按钮 / 抽屉 / 
 python dsh_gui.py --stop-selftest   # 「停止」整条链路（假进程 + 注入端口探测）
 ```
 
-共 513 个用例。测试只用标准库，用 `tempfile` 造假目录树，不依赖本机任何真实安装路径；两个自检
+共 519 个用例。测试只用标准库，用 `tempfile` 造假目录树，不依赖本机任何真实安装路径；两个自检
 同样把进程与端口探测全部注入（不碰真实 DSH 进程、也不要求 3080 空闲），所以在 CI 上可跑。
 GUI 用例需要 `customtkinter` / `pillow` / `qrcode`，没装时会跳过；托盘用例用假 pystray，
 不需要真的托盘环境。

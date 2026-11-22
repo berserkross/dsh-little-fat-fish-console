@@ -91,10 +91,14 @@ class JournalFailureTests(unittest.TestCase):
         self.assertIn("备用位置也要有", spare.read_text(encoding="utf-8"))
 
     def test_no_fallback_when_localappdata_missing(self):
-        with mock.patch.dict(os.environ, {}, clear=False):
+        # 顺手把 config 也关进临时目录：否则 fallback 会退回真实 %APPDATA%，测试往用户目录写脏行
+        cfg = self.root / "cfg" / "config.json"
+        with mock.patch.dict(os.environ, {"DSH_CONSOLE_CONFIG": str(cfg)}, clear=False):
             os.environ.pop("LOCALAPPDATA", None)
             self.assertEqual(journal.fallback_path(), journal.path())
+            # target 失败后 fallback 恰好就是 cfg 目录下的同名日志：它写进去了，且没碰真实用户目录
             self.assertFalse(journal.write("两处同一路径", target=self.target))
+        self.assertTrue((self.root / "cfg" / journal.LOG_NAME).is_file())
 
 
 class JournalTailTests(unittest.TestCase):
