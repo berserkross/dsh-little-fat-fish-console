@@ -33,7 +33,8 @@ def install_path() -> Path | None:
         return None
     try:
         install = Path(sys.executable).resolve().parent
-        if install.is_relative_to(Path.home()):
+        home = Path.home().resolve()
+        if install.is_relative_to(home):
             return install / "logs" / LOG_NAME
     except OSError:
         pass

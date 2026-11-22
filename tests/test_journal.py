@@ -25,7 +25,8 @@ class JournalPathTests(unittest.TestCase):
             with mock.patch.object(journal.sys, "frozen", True, create=True), \
                  mock.patch.object(journal.sys, "executable", str(exe)), \
                  mock.patch.object(Path, "home", return_value=root):
-                self.assertEqual(journal.path(), exe.parent / "logs" / journal.LOG_NAME)
+                expected = (exe.parent / "logs" / journal.LOG_NAME).resolve()
+                self.assertEqual(journal.path(), expected)
 
 
 class JournalWriteTests(unittest.TestCase):
@@ -107,7 +108,7 @@ class JournalFailureTests(unittest.TestCase):
              mock.patch.object(Path, "home", return_value=self.root), \
              mock.patch.object(journal, "fallback_path", return_value=self.blocker / "local.log"):
             self.assertFalse(journal.write("启动", target=self.target))
-        actual = exe.parent / "logs" / journal.LOG_NAME
+        actual = (exe.parent / "logs" / journal.LOG_NAME).resolve()
         text = actual.read_text(encoding="utf-8")
         self.assertIn("启动", text)
         self.assertIn("回退原因", text)
