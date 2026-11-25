@@ -2408,8 +2408,9 @@ class ConsoleApp(ctk.CTk):
         else:
             actions.step("结束 DSH 进程树 PID " + "、".join(str(pid) for pid in targets))
         # 整棵树一起结束（node 的子进程留着会继续占端口，下一步就卡在「端口没关」上），
-        # 但控制台自己那一整段要排除：控制台常常是从 DSH 里被拉起来的（手机端动作、
-        # DSH 里的工具调用都算），taskkill /T 会顺着父进程链把它一并带走。
+        # 只把控制台自己那一个 PID 摘出来：控制台常常是从 DSH 里被拉起来的（手机端动作、
+        # DSH 里的工具调用都算），taskkill /T 会顺着父进程链把它一并带走。注意只摘它自己，
+        # 不摘它的子孙 —— DSH 本来就是控制台的子进程，摘了子孙等于重启什么都不做。
         killed, spared, err = pkill.stop_tree(targets, protect=[me])
         if err:
             self.log_async(f"结束进程树没能完全成功：{err}")

@@ -56,10 +56,11 @@ class KillSetTests(unittest.TestCase):
         parent_of = {10: 1, 11: 10, 12: 11}
         self.assertEqual(pkill.kill_set([10], parent_of, []), [10, 11, 12])
 
-    def test_protected_subtree_is_cut_out_with_its_children(self):
-        # 控制台 11 是从 DSH(10) 里被拉起来的：10 要杀，11 和它下面的 12 都不能碰。
+    def test_only_the_named_pid_is_spared(self):
+        # 控制台 11 是从 DSH(10) 里被拉起来的：10 要杀，11 不能碰，但 11 下面
+        # 的 12 照样要杀 —— 只摘 PID、不摘子孙，否则控制台自己拉起的 DSH 就杀不动了。
         parent_of = {10: 1, 11: 10, 12: 11, 13: 1}
-        self.assertEqual(pkill.kill_set([10], parent_of, [11]), [10])
+        self.assertEqual(pkill.kill_set([10], parent_of, [11]), [10, 12])
         self.assertEqual(pkill.kill_set([10], parent_of, [12]), [10, 11])
 
     def test_a_protected_pid_outside_the_tree_changes_nothing(self):
@@ -71,11 +72,11 @@ class StopTreeTests(unittest.TestCase):
     def test_kills_only_what_should_die_and_reports_what_it_spared(self):
         runner = _Runner("10=1\n11=10\n12=11\n13=1\n")
         killed, spared, err = pkill.stop_tree([10], [11], runner=runner)
-        self.assertEqual((killed, spared, err), ([10], [11, 12], None))
+        self.assertEqual((killed, spared, err), ([10, 12], [11], None))
         self.assertEqual(len(runner.calls), 2)
         self.assertIn("Stop-Process -Id 10", runner.calls[1])
+        self.assertIn("Stop-Process -Id 12", runner.calls[1])
         self.assertNotIn("Stop-Process -Id 11", runner.calls[1])
-        self.assertNotIn("Stop-Process -Id 12", runner.calls[1])
 
     def test_nothing_to_kill_means_no_kill_command(self):
         runner = _Runner("10=1\n11=10\n")

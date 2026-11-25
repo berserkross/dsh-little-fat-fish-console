@@ -5,8 +5,9 @@
 DSH 的进程树里 —— 于是「重启 DSH」顺手把控制台也杀了：窗口消失、日志断在半句、
 下一次点快捷方式又是一个新进程，看起来就像「控制台也跟着重启」。
 
-所以不再用 `taskkill /T`：自己查一遍进程树，算出「DSH 的子孙」减去「控制台和它的
-子孙」，再逐个 `Stop-Process`。DSH 自己（树根、控制台的祖先）照杀不误。
+所以不再用 `taskkill /T`：自己查一遍进程树，算出「DSH 的子孙」，摘掉控制台那一个 PID，
+再逐个 `Stop-Process`。DSH 自己（树根、控制台的祖先）照杀不误；控制台拉起来的 DSH
+照杀不误（否则重启会变成什么都不动）。
 """
 from __future__ import annotations
 
@@ -72,10 +73,15 @@ def ancestors(pid: int, parent_of: dict[int, int], limit: int = 64) -> list[int]
 
 
 def kill_set(roots, parent_of: dict[int, int], protect) -> list[int]:
-    """要结束的进程：roots 的子孙减去 protect 的子树（含 protect 自己）。"""
+    """要结束的进程：roots 的子孙，减掉 protect 里点名的那些进程。
+
+    这里只摘掉点名的 PID，**不连带它们的子孙**：控制台自己不能被杀，但它拉起来的子进程
+    （DSH 本身就是控制台的子进程，还有探测用的 powershell）该杀还是要杀 —— 否则
+    「重启 DSH」会变成什么都不动，比误杀更糟。
+    """
     kids = children_of(parent_of)
     doomed = subtree(roots, kids)
-    keep = subtree(protect, kids) if protect else set()
+    keep = {int(pid) for pid in (protect or ())}
     return sorted(doomed - keep)
 
 
@@ -85,7 +91,7 @@ def _script(pids) -> str:
 
 
 def stop_tree(roots, protect, runner=None) -> tuple[list[int], list[int], str | None]:
-    """结束 roots 的进程树，跳过 protect 及其子孙。
+    """结束 roots 的进程树，只跳过 protect 里点名的进程。
 
     返回 (真的下手的 PID, 因为 protect 而跳过的 PID, 错误说明)。PID 现查现算：
     传进来的号可能已经被系统回收，绝不能让它们指向控制台自己。
