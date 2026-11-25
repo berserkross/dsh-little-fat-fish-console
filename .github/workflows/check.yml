@@ -53,3 +53,20 @@ jobs:
           if (-not $v.ProductVersion) { throw "ProductVersion 为空" }
           if (-not $v.CompanyName) { throw "CompanyName 为空" }
           if (-not $v.ProductName) { throw "ProductName 为空" }
+      # 失败时把「这一次的日志在哪」写进运行摘要，并打一条 annotation：
+      # 失败邮件里就带着能直接点开的链接，不用再去 Actions 列表里翻是哪一次。
+      - name: Failure digest
+        if: failure()
+        shell: pwsh
+        run: |
+          $url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $sha = $env:GITHUB_SHA.Substring(0, 7)
+          $lines = @(
+            "## 这一次失败了",
+            "",
+            "- 日志：$url",
+            "- 提交 $sha · 分支 $($env:GITHUB_REF_NAME) · 触发 $($env:GITHUB_EVENT_NAME)",
+            "- 上面哪一步挂了，点开日志里最后一个红色步骤就能看到原因。"
+          )
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host "::error title=CI 失败::日志：$url"
