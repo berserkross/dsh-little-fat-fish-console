@@ -4,6 +4,34 @@
 
 ## [Unreleased]
 
+## [2.4.5] - 2026-11-26
+
+### 修复
+
+- **点「重启 DSH」有可能把控制台窗口一起带走**：真凶这次仍未定位（journal 里重启序列
+  一行都没有，事件日志三天没有 Application Error，控制台父进程是 explorer，唯一会杀进程的
+  `_stop` 已显式跳过自己的 PID）。本轮先把「可诊断」做实：新增动作簿
+  `dshconsole/actions.py`，每个底层动作开始前落盘 `action.json`、每换一步覆盖、正常收尾删掉；
+  下次启动读到残留就打出「上次「重启 DSH」在 11-26 02:31:07 断在「等端口关闭」，没有正常收尾。」
+  —— 窗口被外部硬杀时这是唯一还留着的现场。
+- **结束 DSH 只杀主进程**：node 的子进程留着会继续占用端口，下一步就卡在「端口没关」。
+  现在 `taskkill /T` 结束整棵树，杀前用 `_pids_provider()` 复核名单（PID 会被系统回收，
+  旧号可能已经指向别人）、杀后回读一次，确认真的没了才记「已结束」。
+- 手机端动作改为投递时再绑定处理函数（`lambda` 包一层），替换面不必实现每一个动作。
+
+### 新增
+
+- **「中断会话…」**（服务组）：先列 DSH 里 `running=true` 的会话，弹窗多选（全选 / 中断全部 /
+  中断所选 / 取消），只中断正在跑的这一轮，会话本身与记录都还在。
+  手机端 `/console` 也加了「中断会话」按钮（需要电脑上签的动作码，intent 为 `interrupt`）。
+- 新增 `dshconsole/sessions.py`：直接调 DSH 的 `/api` RPC（`session/list`、
+  `session/cancel`），token 换 cookie 后走 `client-request` 信封。
+- 新增 `dshconsole/actions.py`（`begin` / `step` / `finish` / `unfinished` / `describe`）。
+
+### 用例
+
+- 563 个（新增 21 个：动作簿 7、会话 RPC 8、中断会话的界面钩子 6）。
+
 ## [2.4.4] - 2026-11-26
 
 ### 修复

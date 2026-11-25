@@ -24,10 +24,9 @@ from urllib.parse import urlsplit
 import customtkinter as ctk
 from PIL import Image
 
-from dshconsole import (addresses, adopt, autostart, bridge, children, config, diagnostics, errors,
-                        journal,
-                        logtail,
-                        phone, portal, probe, psrun, resources, single, snapshot, status,
+from dshconsole import (actions, addresses, adopt, autostart, bridge, children, config, diagnostics,
+                        errors, journal, logtail, phone, portal, probe, psrun, resources, sessions,
+                        single, snapshot, status,
                         tailscale,
                         tasks, textutil, tray, ui_theme, widgets)
 from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BADGE_SIZE, BG, BORDER,
@@ -117,6 +116,7 @@ ACTION_GROUPS: tuple = (
         ("⚙", "切换 Web 端口…", "on_change_port"),
         ("■", "关闭 DSH", "on_stop"),
         ("⚑", "开机自启动：关", "on_toggle_autostart"),
+        ("⏹", "中断会话…", "on_interrupt_sessions"),
     )),
     ("手机访问", (
         ("▦", "手机访问二维码", "on_phone_access"),
@@ -482,6 +482,9 @@ class ConsoleApp(ctk.CTk):
         self._port_owner = adopt.from_port_owner    # 「这个端口是谁在听」：探测层可注入
         self._serve_reset = tailscale.reset_serve    # 恢复本机前先撤掉 serve
         self._run_switch = run_ps                    # 提权切换脚本入口
+        # 会话读写的注入点：自检用替身，不打真实的 3080
+        self._sessions_running = lambda: sessions.running(PORT, self._token)
+        self._sessions_cancel = lambda ids: sessions.cancel(PORT, self._token, ids)
         self._snapshot = snapshot.Snapshot(lambda: self._status_provider(), ttl=STATUS_TTL)
         self._queue = tasks.TaskQueue(post=self._post, on_change=self._on_queue_change)
         self._activator = single.Activator()    # 第二个实例叫醒窗口用（见 _poll_activate）
@@ -500,6 +503,10 @@ class ConsoleApp(ctk.CTk):
         self.logline(f"DSH：{HARNESS or '未检测到'}  ·  端口 {PORT}  ·  node：{CFG.node or '未检测到'}")
         # 界面上这 2000 行会被滚动丢弃、关窗就没了：同一份内容另存一份文件，事后才查得动。
         self.logline(f"控制台记录：{journal.path()}")
+        stale = actions.unfinished()
+        if stale:
+            # 上次死在半路的动作，比任何猜测都靠得住：写出来，下次一眼看到断点。
+            self.logline(actions.describe(stale))
         self._start_tray()
         self._start_log_tail()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -727,8 +734,10 @@ class ConsoleApp(ctk.CTk):
         if not ok:
             self.log_async(f"手机端动作被拒：{message}")
             return False, message
+        # 用 lambda 包一层：绑定推迟到队列真正执行时，替换面（测试替身）不必实现每一个动作。
         work = {
-            "start": self._start,
+            "start": lambda: self._start(),
+            "interrupt": lambda: self._interrupt_all(),
             "restart": lambda: self._restart(confirm=False),
             "stop": lambda: self._stop_prepare(confirm=False),
         }[intent]
@@ -1527,6 +1536,7 @@ class ConsoleApp(ctk.CTk):
     def _submit(self, name: str, work, on_done=None):
         """把一个后台操作放进串行队列：界面保持可点，排队中的还能取消。"""
         def run():
+            actions.begin(name)
             try:
                 return work()
             except Exception as exc:  # noqa: BLE001 - 后台异常必须显式落到日志
@@ -1534,6 +1544,7 @@ class ConsoleApp(ctk.CTk):
                                + errors.summarize(type(exc), exc, exc.__traceback__))
                 raise
             finally:
+                actions.finish()
                 self._snapshot.invalidate()   # 操作之后的状态不该从旧缓存里拿
                 self._post(self.refresh)
         return self._queue.submit(name, run, on_done)
@@ -1811,6 +1822,96 @@ class ConsoleApp(ctk.CTk):
     def _on_log_overlay_closed(self) -> None:
         self._log_overlay = None
 
+    def on_interrupt_sessions(self) -> None:
+        """中断会话：先把正在跑的列出来，选定了才动手。"""
+        self._submit("中断会话", self._interrupt_sessions)
+
+    def _interrupt_sessions(self) -> None:
+        try:
+            rows = self._sessions_running()
+        except Exception as exc:      # noqa: BLE001 - 读不到就说清读不到
+            self.log_async(f"读不到会话列表：{exc}")
+            return
+        if not rows:
+            self.log_async("没有正在进行的会话，不用中断。")
+            return
+        self.log_async(f"正在进行的会话 {len(rows)} 个，等你选。")
+        picked = self._ask_main(self._pick_sessions, rows)
+        if not picked:
+            self.log_async("已取消：没有中断任何会话。")
+            return
+        titles = {row.session_id: row.title for row in rows}
+        for session_id, result in self._sessions_cancel(list(picked)):
+            self.log_async(f"{(titles.get(session_id) or session_id)[:40]}：{result}")
+        self.refresh(force=True)
+
+    def _interrupt_all(self) -> None:
+        """手机端「中断」：等同弹窗里的「中断全部」，不必在手机上勾选。"""
+        rows = self._sessions_running()
+        if not rows:
+            self.log_async("没有正在进行的会话，不用中断。")
+            return
+        titles = {row.session_id: row.title for row in rows}
+        for session_id, result in self._sessions_cancel([row.session_id for row in rows]):
+            self.log_async(f"{(titles.get(session_id) or session_id)[:40]}：{result}")
+
+    def _pick_sessions(self, rows: list) -> list[str] | None:
+        """勾选要中断的会话（主线程弹窗）。返回会话号列表；关窗或取消返回 None。"""
+        answer: dict = {}
+        win = ctk.CTkToplevel(self)
+        win.title("中断会话")
+        win.geometry("640x440")
+        win.configure(fg_color=BG)
+        win.transient(self)
+        ctk.CTkLabel(win, text=f"正在进行的会话（{len(rows)}）", font=_font(14, True),
+                     text_color=TEXT, anchor="w").pack(fill="x", padx=18, pady=(16, 4))
+        ctk.CTkLabel(win, text="勾一个或多个；「中断全部」等于全勾。中断只作用在正在跑的这一轮，"
+                               "会话本身和它的记录都还在。",
+                     font=_font(10), text_color=DIM, anchor="w", justify="left",
+                     wraplength=580).pack(fill="x", padx=18, pady=(0, 8))
+        body = ctk.CTkScrollableFrame(win, fg_color=CARD, corner_radius=CARD_RADIUS, height=250)
+        body.pack(fill="both", expand=True, padx=18)
+        boxes: list = []
+        for row in rows:
+            when = (time.strftime("%m-%d %H:%M", time.localtime(row.updated_at / 1000))
+                    if row.updated_at else "时间未知")
+            var = ctk.BooleanVar(value=False)
+            ctk.CTkCheckBox(body, text=f"{row.title[:40]}　·　{when}", variable=var,
+                            font=_font(11), text_color=TEXT, fg_color=PRIMARY,
+                            hover_color=PRIMARY_HOVER, checkbox_width=18,
+                            checkbox_height=18).pack(anchor="w", padx=10, pady=5)
+            boxes.append((row.session_id, var))
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(fill="x", padx=18, pady=12)
+
+        def finish(ids) -> None:
+            answer["ids"] = ids
+            win.destroy()
+
+        def check_all() -> None:
+            for _session_id, var in boxes:
+                var.set(True)
+
+        ctk.CTkButton(bar, text="全选", width=76, height=32, fg_color=CHIP,
+                      hover_color=CHIP_HOVER, border_width=1, border_color=BORDER,
+                      text_color=TEXT, font=_font(11), command=check_all).pack(side="left")
+        ctk.CTkButton(bar, text=f"中断全部（{len(rows)}）", width=140, height=32,
+                      fg_color=RED, hover_color=RED_DARK, text_color=TEXT,
+                      font=_font(11),
+                      command=lambda: finish([sid for sid, _v in boxes])).pack(side="left", padx=8)
+        ctk.CTkButton(bar, text="中断所选", width=104, height=32, fg_color=PRIMARY,
+                      hover_color=PRIMARY_HOVER, text_color=TEXT, font=_font(11),
+                      command=lambda: finish([sid for sid, var in boxes if var.get()])
+                      ).pack(side="right")
+        ctk.CTkButton(bar, text="取消", width=76, height=32, fg_color=CHIP,
+                      hover_color=CHIP_HOVER, border_width=1, border_color=BORDER,
+                      text_color=TEXT, font=_font(11),
+                      command=lambda: finish(None)).pack(side="right", padx=8)
+        win.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+        win.grab_set()
+        self.wait_window(win)
+        return answer.get("ids")
+
     def on_change_port(self) -> None:
         """切换 Web 端口：写回 config.json 并刷新（新的端口下次启动生效）。"""
         global CFG, PORT
@@ -1858,6 +1959,7 @@ class ConsoleApp(ctk.CTk):
         的守卫，上一份进程退得慢（或端口其实被另一处安装占着）时它静默跳过，
         于是重启看起来完全没反应。现在两步各自验证，失败就说清失败在哪。
         """
+        actions.step("查 DSH 进程")
         pids, err = self._pids_provider()
         if pids is None:
             self.log_async(f"未知：node 进程查不到（{err}），重启前不结束任何进程。")
@@ -1874,7 +1976,9 @@ class ConsoleApp(ctk.CTk):
                                   "当前网页会断开（会话已存档可重开）。继续吗？"):
                 self.log_async("已取消重启，未结束任何进程。")
                 return
+            actions.step("结束 DSH 进程")
             self._stop(pids)
+            actions.step("等端口关闭")
             if not self._wait_port(False, 10.0):
                 self.log_async(f"重启中止：{PORT} 仍然被占用，没有再拉起第二份 DSH。"
                                "若占用者是另一处安装，点「改为控制运行中的实例」接管它；"
@@ -1883,7 +1987,9 @@ class ConsoleApp(ctk.CTk):
                 self.refresh(force=True)
                 return
             self.log_async(f"重启②：{PORT} 已关闭，开始拉起新的 DSH。")
+        actions.step("拉起新的 DSH")
         self._start(force=True)
+        actions.step("等端口开始监听")
         if self._wait_started(30.0):
             left, _err = self._pids_provider()
             if not left:
@@ -2245,15 +2351,29 @@ class ConsoleApp(ctk.CTk):
 
     def _stop(self, pids: list[int]) -> None:
         me = os.getpid()
+        # 杀之前先复核名单：PID 会被系统回收，拿旧号去杀，杀到的可能是别人（包括控制台自己）。
+        fresh, fresh_err = self._pids_provider()
+        if fresh is not None:
+            stale = [pid for pid in pids if int(pid) not in fresh]
+            if stale:
+                self.log_async("跳过已不在名单里的 PID：" + "、".join(str(p) for p in stale))
+            pids = [pid for pid in pids if int(pid) in fresh]
+        else:
+            self.log_async(f"没能复核进程名单（{fresh_err}），按原名单继续。")
         for pid in pids:
             # PID 会被系统回收：杀掉自己就等于「点重启把窗口也关了」，这条线一圈都不许越过。
             if int(pid) == me:
                 self.log_async(f"跳过 PID {pid}：那是控制台自己。")
                 continue
-            result = psrun.run_ps_cmd(
-                f"Stop-Process -Id {int(pid)} -Force -ErrorAction Stop; 'stopped'")
+            actions.step(f"结束 DSH 进程 PID {pid}")
+            # 整棵树一起结束：node 的子进程留着会继续占端口，下一步就卡在「端口没关」上。
+            # 杀完回读一次，确认真没了才敢说 stopped。
+            script = ("& taskkill.exe /PID {0} /T /F *> $null; "
+                      "if (Get-Process -Id {0} -ErrorAction SilentlyContinue) {{ 'alive' }} "
+                      "else {{ 'stopped' }}").format(int(pid))
+            result = psrun.run_ps_cmd(script)
             if result.ok and "stopped" in result.stdout:
-                self.log_async(f"已结束 node.exe PID {pid}")
+                self.log_async(f"已结束 node.exe PID {pid}（连同它的子进程）")
             else:
                 self.log_async(f"停止 PID {pid} 失败：{result.why() or result.text.strip()[:200]}")
         for _ in range(20):

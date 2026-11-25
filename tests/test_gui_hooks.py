@@ -11,7 +11,7 @@ try:
 except Exception as exc:  # noqa: BLE001 - 缺 GUI 依赖时跳过
     raise unittest.SkipTest("无法导入 GUI：" + str(exc))
 
-from dshconsole import adopt, portal, psrun, snapshot, status, tasks
+from dshconsole import adopt, portal, psrun, sessions, snapshot, status, tasks
 
 FAKE_BIN_JS = r"C:\自检\node_modules\@deepseek-ai\dsh\lib\bin.js"
 
@@ -415,7 +415,7 @@ class PortalBridgeTests(unittest.TestCase):
         self.assertEqual(payload["pid"], 4242)
         self.assertTrue(payload["serving"])
         self.assertFalse(payload["relay"])
-        self.assertEqual(payload["actions"], ["restart", "start", "stop"])
+        self.assertEqual(payload["actions"], ["interrupt", "restart", "start", "stop"])
         self.assertNotIn("token", " ".join(payload))
 
     def test_state_payload_survives_before_the_first_probe(self):
@@ -623,6 +623,71 @@ class AutoRefreshTests(unittest.TestCase):
         app.lbl_service = Widget()
         self.app_cls._show_refresh_failed(app, "探测炸了")
         self.assertFalse(app._refreshing)
+
+
+class InterruptSessionsTests(unittest.TestCase):
+    """中断会话：列出来的才动手，一个失败不影响其余，读完刷新状态。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def _app(self, rows, picked=None):
+        app = FakeApp()
+        app._sessions_running = lambda: rows
+        app.cancelled = []
+
+        def cancel(ids):
+            app.cancelled.extend(ids)
+            return [(sid, "已中断") for sid in ids]
+
+        app._sessions_cancel = cancel
+        app._pick_sessions = lambda rows: picked
+        app._ask_main = lambda fn, *args: fn(*args)
+        return app
+
+    @staticmethod
+    def _rows(*pairs):
+        return [sessions.Running(session_id=sid, title=title, updated_at=0)
+                for sid, title in pairs]
+
+    def test_nothing_running_says_so_instead_of_opening_a_dialog(self):
+        app = self._app([])
+        app._ask_main = lambda *a: self.fail("没有会话就不该弹窗")
+        self.app_cls._interrupt_sessions(app)
+        self.assertTrue(any("没有正在进行的会话" in line for line in app.logged))
+
+    def test_interrupt_all_cancels_every_listed_session(self):
+        app = self._app(self._rows(("session-a", "写文档"), ("b", "跑测试")))
+        self.app_cls._interrupt_all(app)
+        self.assertEqual(app.cancelled, ["session-a", "b"])
+        self.assertTrue(any("写文档" in line and "已中断" in line for line in app.logged))
+        self.assertTrue(any("跑测试" in line and "已中断" in line for line in app.logged))
+
+    def test_only_the_picked_sessions_are_cancelled(self):
+        app = self._app(self._rows(("a", "一"), ("b", "二")), picked=["b"])
+        self.app_cls._interrupt_sessions(app)
+        self.assertEqual(app.cancelled, ["b"])
+
+    def test_cancelling_nothing_is_logged_as_cancelled(self):
+        app = self._app(self._rows(("a", "一")), picked=None)
+        app._ask_main = lambda *a: None
+        self.app_cls._interrupt_sessions(app)
+        self.assertEqual(app.cancelled, [])
+        self.assertTrue(any("已取消" in line for line in app.logged))
+
+    def test_unreadable_list_is_reported_not_swallowed(self):
+        app = self._app([])
+
+        def boom():
+            raise sessions.SessionsError("连不上 http://127.0.0.1:3080")
+
+        app._sessions_running = boom
+        self.app_cls._interrupt_sessions(app)
+        self.assertTrue(any("读不到会话列表" in line for line in app.logged))
+
+    def test_status_is_refreshed_after_cancelling(self):
+        app = self._app(self._rows(("a", "一")), picked=["a"])
+        self.app_cls._interrupt_sessions(app)
+        self.assertEqual(app.refreshed, 1)
 
 
 if __name__ == "__main__":

@@ -53,6 +53,7 @@ button:active{background:#26325a}
     <button data-intent="start">启动</button>
     <button data-intent="restart">重启</button>
     <button data-intent="stop">关闭</button>
+    <button data-intent="interrupt">中断会话</button>
   </div>
   <div class="hint" id="msg">动作要先在电脑上点一下底栏的「手机动作码」：60 秒有效，用一次作废。</div>
 </div>

@@ -77,9 +77,9 @@ class ActionGroupsTests(unittest.TestCase):
         self.assertEqual(got, {"start", "stop"})
 
     def test_group_count_matches_the_spec(self):
-        """17 项：启停合并到主按钮后少两颗；服务组加回「关闭 DSH」与「开机自启动」，
+        """18 项：启停合并到主按钮后少两颗；服务组加回「关闭 DSH」「开机自启动」与「中断会话」，
         手机访问组加「免 token 直连」，工具组加「免 token 自动开」（两个开关都是偏好）。"""
-        self.assertEqual(len(_entries()), 17)
+        self.assertEqual(len(_entries()), 18)
 
 
 class LayoutBudgetTests(unittest.TestCase):

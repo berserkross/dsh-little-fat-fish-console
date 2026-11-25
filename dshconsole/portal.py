@@ -4,7 +4,7 @@
 点一下「手机动作码」，把 6 位数字敲进手机页面。码 60 秒过期、用一次就作废、同时只有一枚 ——
 它证明的不是「手机连得上」，而是「拿着手机的人此刻也坐在电脑前」。
 
-只放行启动/重启/关闭三件事：切换端口、UAC 开关、退出程序影响面更大，仍然只认电脑上的点击。
+只放行启动/重启/关闭/中断会话四件事：切换端口、UAC 开关、退出程序影响面更大，仍然只认电脑上的点击。
 """
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ import time
 
 CODE_TTL = 60.0
 CODE_DIGITS = 6
-ACTIONS = {"start": "启动 DSH", "restart": "重启 DSH", "stop": "关闭 DSH"}
+ACTIONS = {"start": "启动 DSH", "restart": "重启 DSH", "stop": "关闭 DSH",
+           "interrupt": "中断所有会话"}
 
 
 class ActionGate:

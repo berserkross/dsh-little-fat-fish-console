@@ -66,8 +66,8 @@ class ActionGateTests(unittest.TestCase):
         self.assertFalse(gate.redeem(first, "restart")[0])
         self.assertTrue(gate.redeem(second, "restart")[0])
 
-    def test_actions_cover_exactly_the_lifecycle_trio(self):
-        self.assertEqual(sorted(portal.ACTIONS), ["restart", "start", "stop"])
+    def test_actions_cover_exactly_the_lifecycle_set(self):
+        self.assertEqual(sorted(portal.ACTIONS), ["interrupt", "restart", "start", "stop"])
 
 
 if __name__ == "__main__":
