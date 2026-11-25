@@ -5,6 +5,7 @@ import json
 import socket
 import unittest
 import urllib.error
+from unittest import mock
 
 from dshconsole import probe
 from dshconsole.psrun import PsResult
@@ -322,6 +323,41 @@ class HttpAnswerTests(unittest.TestCase):
         def opener(*_a, **_k):
             raise http.client.BadStatusLine("garbage")
         self.assertIsNone(probe.http_answer(3080, opener=opener))
+
+    def test_one_timeout_is_retried_before_calling_it_silent(self):
+        """实测同一端口连超两次、随后 2 ms 答 401：单次超时不足以判「不应答」。"""
+        calls = []
+
+        def opener(url, **_k):
+            calls.append(url)
+            if len(calls) == 1:
+                raise urllib.error.URLError("timed out")
+            return self._Response(401)
+
+        with mock.patch.object(probe.time, "sleep", lambda _s: None):
+            self.assertEqual(probe.http_answer(3080, opener=opener), 401)
+        self.assertEqual(len(calls), 2)
+
+    def test_every_attempt_failing_is_none(self):
+        calls = []
+
+        def opener(url, **_k):
+            calls.append(url)
+            raise urllib.error.URLError("down")
+
+        with mock.patch.object(probe.time, "sleep", lambda _s: None):
+            self.assertIsNone(probe.http_answer(3080, opener=opener))
+        self.assertEqual(len(calls), probe.HTTP_ANSWER_ATTEMPTS)
+
+    def test_attempts_one_keeps_the_single_shot_path(self):
+        calls = []
+
+        def opener(url, **_k):
+            calls.append(url)
+            raise urllib.error.URLError("down")
+
+        self.assertIsNone(probe.http_answer(3080, opener=opener, attempts=1))
+        self.assertEqual(len(calls), 1)
 
     def test_url_has_no_token_and_no_trailing_path(self):
         seen = []

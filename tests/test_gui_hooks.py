@@ -539,5 +539,91 @@ class StartupLineTests(unittest.TestCase):
         self.assertNotEqual(first, second)          # 秒数在递增
 
 
+class AutostartToggleTests(unittest.TestCase):
+    """「开机自启动」是机器级偏好：切换写 HKCU 的启动项，写不进去就别谎报已开。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def _app(self, current=False):
+        app = FakeApp()
+        app._autostart = current
+        synced = []
+        app._sync_group_labels = lambda: synced.append(True)
+        return app, synced
+
+    def test_toggle_writes_the_startup_entry(self):
+        app, synced = self._app()
+        calls = []
+        with mock.patch.object(dsh_gui.autostart, "available", lambda: True), \
+             mock.patch.object(dsh_gui.autostart, "set_enabled", calls.append):
+            self.app_cls.on_toggle_autostart(app)
+        self.assertTrue(app._autostart)
+        self.assertEqual(calls, [True])
+        self.assertEqual(len(synced), 1)
+
+    def test_toggle_off_removes_it_again(self):
+        app, _ = self._app(current=True)
+        calls = []
+        with mock.patch.object(dsh_gui.autostart, "available", lambda: True), \
+             mock.patch.object(dsh_gui.autostart, "set_enabled", calls.append):
+            self.app_cls.on_toggle_autostart(app)
+        self.assertFalse(app._autostart)
+        self.assertEqual(calls, [False])
+
+    def test_write_failure_keeps_the_label_and_says_so(self):
+        app, synced = self._app()
+
+        def boom(_value):
+            raise OSError("拒绝访问")
+
+        with mock.patch.object(dsh_gui.autostart, "available", lambda: True), \
+             mock.patch.object(dsh_gui.autostart, "set_enabled", boom):
+            self.app_cls.on_toggle_autostart(app)
+        self.assertFalse(app._autostart)
+        self.assertEqual(synced, [])
+        self.assertTrue(any("没能写进启动项" in line for line in app.logged))
+
+    def test_non_windows_says_so_instead_of_pretending(self):
+        app, synced = self._app()
+        with mock.patch.object(dsh_gui.autostart, "available", lambda: False):
+            self.app_cls.on_toggle_autostart(app)
+        self.assertFalse(app._autostart)
+        self.assertEqual(synced, [])
+        self.assertTrue(any("只在 Windows 上有效" in line for line in app.logged))
+
+
+class AutoRefreshTests(unittest.TestCase):
+    """自动刷新：外因（Tailscale 起晚了、DSH 被别处重启）不该等用户点按钮。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def test_idle_tick_refreshes_and_reschedules(self):
+        app = FakeApp()
+        app._refreshing = False
+        scheduled = []
+        app.after = lambda ms, _fn, *a: scheduled.append(ms)
+        app._schedule_auto_refresh = lambda: app.after(dsh_gui.AUTO_REFRESH_MS, None)
+        self.app_cls._auto_refresh(app)
+        self.assertEqual(app.refreshed, 1)
+        self.assertEqual(scheduled, [dsh_gui.AUTO_REFRESH_MS])
+
+    def test_in_flight_refresh_is_not_stacked(self):
+        app = FakeApp()
+        app._refreshing = True
+        scheduled = []
+        app.after = lambda ms, _fn, *a: scheduled.append(ms)
+        app._schedule_auto_refresh = lambda: app.after(dsh_gui.AUTO_REFRESH_MS, None)
+        self.app_cls._auto_refresh(app)
+        self.assertEqual(app.refreshed, 0)
+        self.assertEqual(scheduled, [dsh_gui.AUTO_REFRESH_MS])   # 下一轮照样排
+
+    def test_refresh_failure_clears_the_in_flight_flag(self):
+        app = FakeApp()
+        app._refreshing = True
+        app.lbl_service = Widget()
+        self.app_cls._show_refresh_failed(app, "探测炸了")
+        self.assertFalse(app._refreshing)
+
+
 if __name__ == "__main__":
     unittest.main()

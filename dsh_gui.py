@@ -24,7 +24,8 @@ from urllib.parse import urlsplit
 import customtkinter as ctk
 from PIL import Image
 
-from dshconsole import (addresses, adopt, bridge, children, config, diagnostics, errors, journal,
+from dshconsole import (addresses, adopt, autostart, bridge, children, config, diagnostics, errors,
+                        journal,
                         logtail,
                         phone, portal, probe, psrun, resources, single, snapshot, status,
                         tailscale,
@@ -53,6 +54,8 @@ _APP = None                        # 当前窗口实例：未捕获异常写日�
 MAX_LOG_LINES = 2000               # 日志框行数上限：超过就从顶部滚动丢弃旧行
 LOG_POLL_INTERVAL = 0.4            # 跟随真实日志的轮询间隔（秒，≥0.3，不许 busy loop）
 STATUS_TTL = 3.0                   # 状态缓存：连点刷新不重复扫描，手动刷新穿透
+AUTO_REFRESH_MS = 15_000            # 自动刷新间隔：Tailscale 起晚了、DSH 被别处重启，
+                                   # 界面自己该发现，而不是等用户点「刷新状态」
 NODE_HEAP_MB = 1536                # node 堆上限（MB）：默认上限按内存给到 4 GB，DSH 会一路涨到
                                    # 2 GB 再被系统换页；封到 1.5 GB 让它早点 GC，别把机器拖进换页。
 
@@ -113,6 +116,7 @@ ACTION_GROUPS: tuple = (
         ("◌", "刷新状态", "on_refresh"),
         ("⚙", "切换 Web 端口…", "on_change_port"),
         ("■", "关闭 DSH", "on_stop"),
+        ("⚑", "开机自启动：关", "on_toggle_autostart"),
     )),
     ("手机访问", (
         ("▦", "手机访问二维码", "on_phone_access"),
@@ -485,6 +489,11 @@ class ConsoleApp(ctk.CTk):
         self._tail: logtail.LogTailer | None = None
         self._close_to_tray = config.close_to_tray()
         self._auto_relay = config.auto_relay()
+        self._refreshing = False                 # 一次刷新在飞：自动刷新不许叠上去
+        try:
+            self._autostart = autostart.enabled()
+        except Exception:      # noqa: BLE001 - 读注册表失败就按「没开」显示，别带崩窗口
+            self._autostart = False
         self._gate = portal.ActionGate()      # 手机端动作码：电脑给了码，手机才能动
         self.report_callback_exception = self._on_callback_error
         self._build()
@@ -495,6 +504,7 @@ class ConsoleApp(ctk.CTk):
         self._start_log_tail()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(150, self.refresh)
+        self._schedule_auto_refresh()
         self.after(400, self._poll_activate)
         self.after(700, self._check_leftover_children)
 
@@ -630,6 +640,9 @@ class ConsoleApp(ctk.CTk):
             ("on_toggle_auto_relay",
              "免 token 自动开：开" if getattr(self, "_auto_relay", True)
              else "免 token 自动开：关"),
+            ("on_toggle_autostart",
+             "开机自启动：开" if getattr(self, "_autostart", False)
+             else "开机自启动：关"),
             ("on_toggle_close_mode",
              "关闭窗口时：收进托盘" if self._close_to_tray else "关闭窗口时：退出程序"),
         )
@@ -738,6 +751,37 @@ class ConsoleApp(ctk.CTk):
         else:
             self.logline("免 token 直连：不再自动开启（「免 token 直连」芯片仍可手动开）。")
         self._sync_group_labels()
+
+    def on_toggle_autostart(self) -> None:
+        """开机自启动开关：写 HKCU 的 Run 键，失败只记日志（本次状态照样翻）。"""
+        if not autostart.available():
+            self.logline("开机自启动只在 Windows 上有效，这台机器没有可写的启动项。")
+            return
+        want = not getattr(self, "_autostart", False)
+        try:
+            autostart.set_enabled(want)
+        except Exception as exc:      # noqa: BLE001 - 写不进去也要让本次显示跟上
+            self.logline(f"开机自启动没能写进启动项：{exc}（本次不生效）")
+            return
+        self._autostart = want
+        self.logline("开机自启动：已打开（登录后自动拉起控制台）。" if want
+                     else "开机自启动：已关闭。")
+        self._sync_group_labels()
+
+    def _schedule_auto_refresh(self) -> None:
+        """排下一次自动刷新。窗口销毁后 after 会抛 TclError，这里静默放弃。"""
+        try:
+            self.after(AUTO_REFRESH_MS, self._auto_refresh)
+        except Exception:      # noqa: BLE001 - 已经在销毁路径上
+            pass
+
+    def _auto_refresh(self) -> None:
+        """到点自己刷一次；上一轮还没回来就跳过，绝不让探测叠罗汉。"""
+        try:
+            if not getattr(self, "_refreshing", False):
+                self.refresh()
+        finally:
+            self._schedule_auto_refresh()
 
     def _close_overlays(self) -> None:
         """收起浮层，并释放二维码的内存引用（不产生任何文件）。"""
@@ -1549,6 +1593,7 @@ class ConsoleApp(ctk.CTk):
         点刷新、任务结束时的刷新都走这条路，界面一次都不该冻住。
         """
         # 二维码不再随刷新清除：它住在浮层里，关掉浮层才清（否则刷一次闪一下）。
+        self._refreshing = True
         self._show_refreshing()
 
         def work() -> None:
@@ -1577,6 +1622,7 @@ class ConsoleApp(ctk.CTk):
             pass
 
     def _show_refresh_failed(self, why: str) -> None:
+        self._refreshing = False
         try:
             self.lbl_service.configure(text=f"状态未知（刷新失败：{why[:40]}）",
                                        text_color=FAINT)
@@ -1590,6 +1636,7 @@ class ConsoleApp(ctk.CTk):
         一次 ~15 ms，抢 GIL 时一次 Tk 调用就要 20 ms 上下。所以这里的原则是
         「少调用」：能后台算的（token）都在后台算，网络细节只在变化时进日志。
         """
+        self._refreshing = False
         self._last_status = state
         style = PHASE_STYLE[state.phase]
         self.lbl_service.configure(text=state.phase.label, text_color=style.color)

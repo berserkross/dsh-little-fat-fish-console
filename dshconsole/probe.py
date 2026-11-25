@@ -51,6 +51,8 @@ def port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.4) -> bool:
 
 # ---------------- 端口转发（netsh portproxy） ----------------
 TOKEN_PROBE_TIMEOUT = 2.0
+HTTP_ANSWER_ATTEMPTS = 2        # 「它不应答」是个结论，一次超时不足以得出
+HTTP_ANSWER_RETRY_DELAY = 0.15  # 两次之间留一口气，让刚醒来的实例把响应写出来
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -91,22 +93,31 @@ def token_accepted(port: int, token: str, host: str = "127.0.0.1",
 
 
 def http_answer(port: int, host: str = "127.0.0.1", timeout: float = 1.5,
-                opener=None) -> int | None:
+                opener=None, attempts: int = HTTP_ANSWER_ATTEMPTS) -> int | None:
     """端口在监听不等于 DSH 活着：真正答出 HTTP 才算。
 
     返回状态码本身，连不上 / 超时 / 答的不是 HTTP 一律 None。401 与 302 都算答话——
     认证拒绝恰恰证明服务在跑；把「插件还在加载的半死实例」和「端口被别的程序占着」
     从「已就绪」里摘出来的，就是这个区别。
+
+    一次 1.5 秒超时不足以断定「哑巴」：本机实测同一端口连超两次、随后 2 ms 就答 401，
+    单次判定会把活着但正在忙的实例写成「异常」。所以默认再问一次，任何一轮答出状态码
+    就立刻返回。
     """
     url = f"http://{host}:{int(port)}/"
     open_url = opener or _default_opener().open
-    try:
-        with open_url(url, timeout=timeout) as response:
-            return int(getattr(response, "status", 200) or 200)
-    except urllib.error.HTTPError as exc:
-        return int(getattr(exc, "code", 0) or 0) or None
-    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
-        return None
+    rounds = max(1, int(attempts))
+    for attempt in range(rounds):
+        try:
+            with open_url(url, timeout=timeout) as response:
+                return int(getattr(response, "status", 200) or 200)
+        except urllib.error.HTTPError as exc:
+            return int(getattr(exc, "code", 0) or 0) or None
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
+            if attempt + 1 >= rounds:
+                return None
+            time.sleep(HTTP_ANSWER_RETRY_DELAY)
+    return None
 
 
 def parse_portproxy_table(text: str) -> list[tuple[str, int, str, int]]:
