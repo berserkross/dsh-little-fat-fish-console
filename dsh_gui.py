@@ -25,7 +25,8 @@ import customtkinter as ctk
 from PIL import Image
 
 from dshconsole import (actions, addresses, adopt, autostart, bridge, children, config, diagnostics,
-                        errors, journal, logtail, phone, portal, probe, psrun, resources, sessions,
+                        errors, journal, logtail, phone, pkill, portal, probe, psrun, resources,
+                        sessions,
                         single, snapshot, status,
                         tailscale,
                         tasks, textutil, tray, ui_theme, widgets)
@@ -483,8 +484,8 @@ class ConsoleApp(ctk.CTk):
         self._serve_reset = tailscale.reset_serve    # 恢复本机前先撤掉 serve
         self._run_switch = run_ps                    # 提权切换脚本入口
         # 会话读写的注入点：自检用替身，不打真实的 3080
-        self._sessions_running = lambda: sessions.running(PORT, self._token)
-        self._sessions_cancel = lambda ids: sessions.cancel(PORT, self._token, ids)
+        self._sessions_running = lambda: sessions.running(PORT, self._session_token())
+        self._sessions_cancel = lambda ids: sessions.cancel(PORT, self._session_token(), ids)
         self._snapshot = snapshot.Snapshot(lambda: self._status_provider(), ttl=STATUS_TTL)
         self._queue = tasks.TaskQueue(post=self._post, on_change=self._on_queue_change)
         self._activator = single.Activator()    # 第二个实例叫醒窗口用（见 _poll_activate）
@@ -1863,24 +1864,16 @@ class ConsoleApp(ctk.CTk):
         win.geometry("640x440")
         win.configure(fg_color=BG)
         win.transient(self)
-        ctk.CTkLabel(win, text=f"正在进行的会话（{len(rows)}）", font=_font(14, True),
-                     text_color=TEXT, anchor="w").pack(fill="x", padx=18, pady=(16, 4))
+        head = ctk.CTkLabel(win, text=f"正在进行的会话（{len(rows)}）", font=_font(14, True),
+                            text_color=TEXT, anchor="w")
+        head.pack(fill="x", padx=18, pady=(16, 4))
         ctk.CTkLabel(win, text="勾一个或多个；「中断全部」等于全勾。中断只作用在正在跑的这一轮，"
-                               "会话本身和它的记录都还在。",
+                               "会话本身和它的记录都还在。刷新会重读一次列表。",
                      font=_font(10), text_color=DIM, anchor="w", justify="left",
                      wraplength=580).pack(fill="x", padx=18, pady=(0, 8))
         body = ctk.CTkScrollableFrame(win, fg_color=CARD, corner_radius=CARD_RADIUS, height=250)
         body.pack(fill="both", expand=True, padx=18)
         boxes: list = []
-        for row in rows:
-            when = (time.strftime("%m-%d %H:%M", time.localtime(row.updated_at / 1000))
-                    if row.updated_at else "时间未知")
-            var = ctk.BooleanVar(value=False)
-            ctk.CTkCheckBox(body, text=f"{row.title[:40]}　·　{when}", variable=var,
-                            font=_font(11), text_color=TEXT, fg_color=PRIMARY,
-                            hover_color=PRIMARY_HOVER, checkbox_width=18,
-                            checkbox_height=18).pack(anchor="w", padx=10, pady=5)
-            boxes.append((row.session_id, var))
         bar = ctk.CTkFrame(win, fg_color="transparent")
         bar.pack(fill="x", padx=18, pady=12)
 
@@ -1892,13 +1885,58 @@ class ConsoleApp(ctk.CTk):
             for _session_id, var in boxes:
                 var.set(True)
 
+        def fill(rows_now: list) -> None:
+            """重新铺一遍列表：刷新后旧的勾选一律作废，免得对着过期会话动手。"""
+            for child in body.winfo_children():
+                child.destroy()
+            boxes.clear()
+            if not rows_now:
+                ctk.CTkLabel(body, text="现在没有正在进行的会话。", font=_font(11),
+                             text_color=DIM, anchor="w").pack(anchor="w", padx=10, pady=14)
+            for row in rows_now:
+                when = (time.strftime("%m-%d %H:%M", time.localtime(row.updated_at / 1000))
+                        if row.updated_at else "时间未知")
+                var = ctk.BooleanVar(value=False)
+                ctk.CTkCheckBox(body, text=f"{row.title[:40]}　·　{when}", variable=var,
+                                font=_font(11), text_color=TEXT, fg_color=PRIMARY,
+                                hover_color=PRIMARY_HOVER, checkbox_width=18,
+                                checkbox_height=18).pack(anchor="w", padx=10, pady=5)
+                boxes.append((row.session_id, var))
+            head.configure(text=f"正在进行的会话（{len(rows_now)}）")
+            all_btn.configure(text=f"中断全部（{len(rows_now)}）")
+
+        def refreshed(rows_now) -> None:
+            refresh_btn.configure(state="normal", text="刷新")
+            if rows_now is None:
+                return
+            fill(rows_now)
+            self.log_async(f"会话列表已刷新：{len(rows_now)} 个正在进行。")
+
+        def refresh() -> None:
+            refresh_btn.configure(state="disabled", text="刷新中…")
+
+            def work() -> None:
+                try:
+                    rows_now = self._sessions_running()
+                except Exception as exc:      # noqa: BLE001 - 读不到就说清读不到
+                    self.log_async(f"刷新会话列表失败：{exc}")
+                    rows_now = None
+                self._post(refreshed, rows_now)
+
+            threading.Thread(target=work, daemon=True, name="dsh-sessions-refresh").start()
+
         ctk.CTkButton(bar, text="全选", width=76, height=32, fg_color=CHIP,
                       hover_color=CHIP_HOVER, border_width=1, border_color=BORDER,
                       text_color=TEXT, font=_font(11), command=check_all).pack(side="left")
-        ctk.CTkButton(bar, text=f"中断全部（{len(rows)}）", width=140, height=32,
-                      fg_color=RED, hover_color=RED_DARK, text_color=TEXT,
-                      font=_font(11),
-                      command=lambda: finish([sid for sid, _v in boxes])).pack(side="left", padx=8)
+        refresh_btn = ctk.CTkButton(bar, text="刷新", width=76, height=32, fg_color=CHIP,
+                                    hover_color=CHIP_HOVER, border_width=1, border_color=BORDER,
+                                    text_color=TEXT, font=_font(11), command=refresh)
+        refresh_btn.pack(side="left", padx=8)
+        all_btn = ctk.CTkButton(bar, text=f"中断全部（{len(rows)}）", width=140, height=32,
+                                fg_color=RED, hover_color=RED_DARK, text_color=TEXT,
+                                font=_font(11),
+                                command=lambda: finish([sid for sid, _v in boxes]))
+        all_btn.pack(side="left")
         ctk.CTkButton(bar, text="中断所选", width=104, height=32, fg_color=PRIMARY,
                       hover_color=PRIMARY_HOVER, text_color=TEXT, font=_font(11),
                       command=lambda: finish([sid for sid, var in boxes if var.get()])
@@ -1907,6 +1945,7 @@ class ConsoleApp(ctk.CTk):
                       hover_color=CHIP_HOVER, border_width=1, border_color=BORDER,
                       text_color=TEXT, font=_font(11),
                       command=lambda: finish(None)).pack(side="right", padx=8)
+        fill(rows)
         win.protocol("WM_DELETE_WINDOW", lambda: finish(None))
         win.grab_set()
         self.wait_window(win)
@@ -2360,22 +2399,26 @@ class ConsoleApp(ctk.CTk):
             pids = [pid for pid in pids if int(pid) in fresh]
         else:
             self.log_async(f"没能复核进程名单（{fresh_err}），按原名单继续。")
-        for pid in pids:
+        targets = [int(pid) for pid in pids if int(pid) != me]
+        if len(targets) != len(pids):
             # PID 会被系统回收：杀掉自己就等于「点重启把窗口也关了」，这条线一圈都不许越过。
-            if int(pid) == me:
-                self.log_async(f"跳过 PID {pid}：那是控制台自己。")
-                continue
-            actions.step(f"结束 DSH 进程 PID {pid}")
-            # 整棵树一起结束：node 的子进程留着会继续占端口，下一步就卡在「端口没关」上。
-            # 杀完回读一次，确认真没了才敢说 stopped。
-            script = ("& taskkill.exe /PID {0} /T /F *> $null; "
-                      "if (Get-Process -Id {0} -ErrorAction SilentlyContinue) {{ 'alive' }} "
-                      "else {{ 'stopped' }}").format(int(pid))
-            result = psrun.run_ps_cmd(script)
-            if result.ok and "stopped" in result.stdout:
-                self.log_async(f"已结束 node.exe PID {pid}（连同它的子进程）")
-            else:
-                self.log_async(f"停止 PID {pid} 失败：{result.why() or result.text.strip()[:200]}")
+            self.log_async(f"跳过 PID {me}：那是控制台自己。")
+        if not targets:
+            self.log_async("没有需要结束的 DSH 进程。")
+        else:
+            actions.step("结束 DSH 进程树 PID " + "、".join(str(pid) for pid in targets))
+        # 整棵树一起结束（node 的子进程留着会继续占端口，下一步就卡在「端口没关」上），
+        # 但控制台自己那一整段要排除：控制台常常是从 DSH 里被拉起来的（手机端动作、
+        # DSH 里的工具调用都算），taskkill /T 会顺着父进程链把它一并带走。
+        killed, spared, err = pkill.stop_tree(targets, protect=[me])
+        if err:
+            self.log_async(f"结束进程树没能完全成功：{err}")
+        if killed:
+            self.log_async("已结束 PID：" + "、".join(str(pid) for pid in killed)
+                           + "（连同它们的子进程）")
+        if me in spared:
+            self.log_async(f"控制台（PID {me}）挂在 DSH 的进程树里：这次跳过了它那一段，"
+                           "窗口不会跟着消失。")
         for _ in range(20):
             time.sleep(0.3)
             if not self._port_open():
@@ -2611,6 +2654,11 @@ class ConsoleApp(ctk.CTk):
     # ---------------- 地址选择（C4：下拉 + 可改端口，不再手输 IP） ----------------
     def _current_token(self) -> "str | None":
         return getattr(self, "_token", None) or token_url()
+
+    def _session_token(self) -> "str | None":
+        """会话接口要的是 token 本身；_token 存的是带 token 的完整地址。"""
+        url = self._current_token()
+        return token_suffix(url) if url else None
 
     def _address_options(self, kinds=None) -> "tuple[list, list[str]]":
         """(可选地址行, 未知项说明)。用最近一次状态，没刷新过就只给本机。"""

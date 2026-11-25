@@ -4,6 +4,30 @@
 
 ## [Unreleased]
 
+## [2.4.7] - 2026-11-26
+
+### 修复
+
+- **点「重启 DSH」把控制台窗口一起带走**：真凶是 taskkill /T。控制台只要是从 DSH 里被
+  拉起来的（手机端动作、DSH 里的工具调用、在 DSH 会话里跑 Start-Process 都算），它就挂在
+  DSH 的进程树里，「结束 DSH 进程树」顺着父进程链一路往下，顺手把控制台也杀了 —— 窗口消失、
+  action.json 断在「结束 DSH 进程 PID …」、下一次双击又是一个新进程，看起来就像控制台
+  自己重启。现在新增 dshconsole/pkill.py：先查一遍进程表，算出「DSH 的子孙」减去
+  「控制台和它的子孙」，再逐个 Stop-Process；被跳过的那一段会写进日志。
+- **「中断会话…」的列表可以刷新**：弹窗里新增「刷新」按钮，重读一次 session/list 再铺列表，
+  刷新后旧的勾选一律作废，免得对着已经结束的会话下手。
+## [2.4.6] - 2026-11-26
+
+### 修复
+
+- **「中断会话…」每次都报 401**：控制台内部存下来的 token 其实是带 token 的完整地址
+  （`http://127.0.0.1:3080/?token=…`），会话接口把它整段拼进 `?token=`，DSH 看到的是
+  `?token=http://…`，于是不管有没有真 token 一律 401。现在 `dshconsole/sessions.py` 新增
+  `bare_token()` 并在 `Client` 构造时统一收敛，控制台侧用 `_session_token()`（内部走
+  `token_suffix()`）喂给两条 seam，交给 DSH 的只有 token 本身。
+- 探测在端口答非 2xx 时不再把 `HTTPError` 对象留给解释器收尾（`probe.http_answer` 问完即关，
+  测试里的 `_post` 同样处理），跑测试不再刷 ResourceWarning。
+
 ## [2.4.5] - 2026-11-26
 
 ### 修复

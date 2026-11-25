@@ -136,5 +136,22 @@ class CancelTests(unittest.TestCase):
         self.assertEqual(results[1], ("ok-1", "已中断"))
 
 
+class TokenShapeTests(unittest.TestCase):
+    """控制台手里是「带 token 的完整地址」，塞进 ?token= 会变成 ?token=http://… → 401。"""
+
+    def test_bare_token_keeps_a_bare_token(self):
+        self.assertEqual(sessions.bare_token("tok"), "tok")
+        self.assertEqual(sessions.bare_token("  tok  "), "tok")
+
+    def test_bare_token_unwraps_a_full_url(self):
+        self.assertEqual(sessions.bare_token("http://127.0.0.1:3080/?token=abc123"), "abc123")
+
+    def test_client_sends_the_token_once_even_when_handed_a_url(self):
+        opener = _Opener({**AUTH, "/api/session/list": _items()})
+        sessions.running(3080, "http://127.0.0.1:3080/?token=abc123", opener=opener)
+        self.assertEqual(opener.seen[0][0], "http://127.0.0.1:3080/?token=abc123")
+
+
+
 if __name__ == "__main__":
     unittest.main()

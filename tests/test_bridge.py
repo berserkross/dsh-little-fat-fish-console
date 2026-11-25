@@ -194,7 +194,10 @@ class ConsoleRouteTests(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=3) as response:
                 return response.status, response.read()
         except urllib.error.HTTPError as exc:
-            return exc.code, exc.read()
+            try:
+                return exc.code, exc.read()
+            finally:
+                exc.close()
 
     def test_console_page_is_served(self):
         relay = self._start()

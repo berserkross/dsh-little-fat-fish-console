@@ -238,19 +238,33 @@ class SelfKillGuardTests(unittest.TestCase):
         self.assertTrue(any("控制台自己" in line for line in app.logged))
 
     def test_other_pid_still_stopped(self):
+        import os
+
         app = FakeApp()
         app._port_open = lambda: False
-        killed = []
+        seen = []
 
-        def fake_run(cmd, **kw):
-            killed.append(cmd)
-            return _ok_result()
+        def fake_stop(roots, protect):
+            seen.append((list(roots), list(protect)))
+            return list(roots), [], None
 
-        with mock.patch.object(dsh_gui.psrun, "run_ps_cmd", fake_run), \
+        with mock.patch.object(dsh_gui.pkill, "stop_tree", fake_stop), \
              mock.patch.object(dsh_gui.time, "sleep", lambda _s: None):
             self.app_cls._stop(app, [4242])
-        self.assertEqual(len(killed), 1)
-        self.assertIn("4242", killed[0])
+        self.assertEqual(seen, [([4242], [os.getpid()])])
+        self.assertTrue(any("已结束 PID：4242" in line for line in app.logged))
+
+    def test_console_inside_the_tree_is_spared_and_said_out_loud(self):
+        import os
+
+        app = FakeApp()
+        app._port_open = lambda: False
+
+        with mock.patch.object(dsh_gui.pkill, "stop_tree",
+                               lambda roots, protect: ([4242], [os.getpid()], None)), \
+             mock.patch.object(dsh_gui.time, "sleep", lambda _s: None):
+            self.app_cls._stop(app, [4242])
+        self.assertTrue(any("挂在 DSH 的进程树里" in line for line in app.logged))
 
 
 class StartGuardTests(unittest.TestCase):

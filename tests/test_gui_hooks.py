@@ -690,5 +690,29 @@ class InterruptSessionsTests(unittest.TestCase):
         self.assertEqual(app.refreshed, 1)
 
 
+class SessionTokenTests(unittest.TestCase):
+    """_token 存的是完整地址，会话接口要裸 token，否则 401。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    @staticmethod
+    def _app(token):
+        app = FakeApp()
+        app._token = token
+        app._current_token = lambda: token      # 替身没有真身那条「回落到日志」的路
+        return app
+
+    def test_full_url_is_unwrapped(self):
+        app = self._app("http://127.0.0.1:3080/?token=abc123")
+        self.assertEqual(self.app_cls._session_token(app), "abc123")
+
+    def test_bare_token_passes_through(self):
+        self.assertEqual(self.app_cls._session_token(self._app("abc123")), "abc123")
+
+    def test_no_token_returns_none(self):
+        self.assertIsNone(self.app_cls._session_token(self._app(None)))
+
+
+
 if __name__ == "__main__":
     unittest.main()

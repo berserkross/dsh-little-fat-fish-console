@@ -39,10 +39,20 @@ class Running:
     updated_at: int
 
 
+def bare_token(token: str) -> str:
+    """只留 token 本身。
+
+    调用方手里常常是「带 token 的完整地址」（控制台的 _token 就是这种形态），
+    直接拼进 ?token= 会拼出 ?token=http://…，DSH 一律回 401。
+    """
+    text = str(token or "").strip()
+    return text.split("token=", 1)[1] if "token=" in text else text
+
+
 class Client:
     def __init__(self, port: int, token: str, timeout: float = RPC_TIMEOUT, opener=None):
         self._port = int(port)
-        self._token = str(token or "")
+        self._token = bare_token(token)
         self._timeout = float(timeout)
         self._opener = opener or urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))

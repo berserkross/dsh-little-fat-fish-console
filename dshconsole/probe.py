@@ -112,7 +112,12 @@ def http_answer(port: int, host: str = "127.0.0.1", timeout: float = 1.5,
             with open_url(url, timeout=timeout) as response:
                 return int(getattr(response, "status", 200) or 200)
         except urllib.error.HTTPError as exc:
-            return int(getattr(exc, "code", 0) or 0) or None
+            code = int(getattr(exc, "code", 0) or 0) or None
+            try:                # 错误对象也握着连接，问完就还，别留给解释器收尾时报警
+                exc.close()
+            except Exception:
+                pass
+            return code
         except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
             if attempt + 1 >= rounds:
                 return None
