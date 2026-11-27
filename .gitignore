@@ -26,3 +26,5 @@ Thumbs.db
 # 临时
 *.tmp
 .tmp*/
+.dsh-scratch/
+artifacts/

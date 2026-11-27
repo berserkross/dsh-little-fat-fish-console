@@ -29,7 +29,8 @@ from dshconsole import (actions, addresses, adopt, autostart, bridge, children, 
                         sessions,
                         single, snapshot, status,
                         tailscale,
-                        tasks, textutil, tray, ui_theme, widgets)
+                        tasks, textutil, tray, traycard, ui_theme, widgets)
+from dshconsole import __version__ as VERSION
 from dshconsole.ui_theme import (ACTION_H, AMBER, AMBER_DARK, BADGE_SIZE, BG, BORDER,
                                  BORDER_STRONG, CARD, CARD2, CARD3, CARD_RADIUS, CHIP,
                                  CHIP_HOVER, CHIP_RADIUS, CYAN, DIM, EMPTY_LOG_HINT, FAINT,
@@ -490,6 +491,7 @@ class ConsoleApp(ctk.CTk):
         self._queue = tasks.TaskQueue(post=self._post, on_change=self._on_queue_change)
         self._activator = single.Activator()    # 第二个实例叫醒窗口用（见 _poll_activate）
         self._tray: tray.Tray | None = None
+        self._tray_card: "traycard.TrayCard | None" = None   # 托盘右键弹出的那张卡片
         self._tail: logtail.LogTailer | None = None
         self._close_to_tray = config.close_to_tray()
         self._auto_relay = config.auto_relay()
@@ -545,7 +547,8 @@ class ConsoleApp(ctk.CTk):
     def _start_tray(self) -> bool:
         if not self._close_to_tray:
             return False                # 用户选了「关闭即退出」：不起托盘
-        self._tray = tray.Tray(post=self._post, on_lost=self._on_tray_lost)
+        self._tray = tray.Tray(post=self._post, on_lost=self._on_tray_lost,
+                               on_right_click=self._on_tray_card)
         ok, why = self._tray.start(self._tray_items())
         if ok:
             self.logline("托盘已就绪：关闭按钮会收进托盘，真退出请用托盘菜单「退出」。")
@@ -570,6 +573,42 @@ class ConsoleApp(ctk.CTk):
             ("停止 DSH", self.on_stop),
             ("退出", self._quit),
         ]
+
+    # ---- 托盘右键卡片 ------------------------------------------------
+    def _on_tray_card(self, x: int, y: int) -> None:
+        """托盘右键：弹出状态卡片。数据是上次刷新的快照，弹完顺手再刷一次。"""
+        self._close_tray_card()
+        try:
+            card = traycard.TrayCard(
+                self, version=VERSION, on_close=self._on_card_closed,
+                rows=traycard.describe(self._last_status or status.Status(phase=status.Phase.UNKNOWN),
+                                       port=PORT),
+                actions=[
+                    (self._window_label(), self._toggle_window, False),
+                    ("复制手机访问地址", self._tray_copy, False),
+                    ("停止 DSH", self.on_stop, True),
+                    ("退出", self._quit, True),
+                ])
+            card.arm("停止 DSH", "再点一次确认停止", self.on_stop)
+            card.arm("退出", "再点一次确认退出", self._quit)
+            self._tray_card = card
+            card.popup_near(x, y)
+        except Exception as exc:       # noqa: BLE001 - 卡片打不开也不该连累控制台
+            self._tray_card = None
+            self.logline(f"状态卡片没能弹出（{exc}），这次只能看日志。")
+            return
+        self.refresh()
+
+    def _on_card_closed(self) -> None:
+        self._tray_card = None
+
+    def _close_tray_card(self) -> None:
+        card, self._tray_card = self._tray_card, None
+        if card is not None:
+            try:
+                card.close()
+            except Exception:      # noqa: BLE001 - 已经关了
+                pass
 
     def _tray_copy(self) -> None:
         """托盘里点「复制」：不走弹窗（托盘场景下用户可能看不见窗口）。"""
@@ -824,6 +863,7 @@ class ConsoleApp(ctk.CTk):
         """真退出：先停后台线程（日志跟随、托盘），再销毁窗口。"""
         # 落一行再走：有这一行=自己退的（用户点了✕/托盘退出），没这一行=进程被硬杀。
         journal.write("控制台正在退出（窗口关闭或托盘退出）。")
+        self._close_tray_card()
         # 账本标成「我走了」：下次启动才知道这些进程是我留下的，而不是「本来就在运行」。
         children.mark(children.STATUS_LEFT, console_pid=os.getpid())
         self._close_overlays()

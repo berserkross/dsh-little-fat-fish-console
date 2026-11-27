@@ -9,7 +9,9 @@ pystray 是可选的：导入不到、或者这台机器给不出托盘（远程
 
 from __future__ import annotations
 
+import ctypes
 import threading
+from ctypes import wintypes
 
 TITLE = "小肥鱼控制台"
 
@@ -26,11 +28,12 @@ class Tray:
     """一层薄包装：起停托盘图标、换菜单、把动作搬回主线程。"""
 
     def __init__(self, icon_path=None, *, title: str = TITLE, post=None,
-                 on_lost=None) -> None:
+                 on_lost=None, on_right_click=None) -> None:
         self._icon_path = icon_path
         self.title = title
         self._post = post or (lambda fn, *args: fn(*args))
         self._on_lost = on_lost
+        self._right_click = on_right_click      # (x, y) -> None，在主线程执行
         self._icon = None
         self._thread: threading.Thread | None = None
         self.reason: str | None = None
@@ -52,9 +55,44 @@ class Tray:
         except Exception as exc:
             self.reason = f"托盘初始化失败（{exc}）"
             return False, self.reason
+        self._hook_right_click()
         self._thread = threading.Thread(target=self._run, name="dsh-tray", daemon=True)
         self._thread.start()
         return True, None
+
+    def _hook_right_click(self) -> bool:
+        """把托盘右键从系统菜单换成自绘卡片；接不上就保持原生菜单。
+
+        pystray 没开放右键钩子，只能改它的消息分发表：`WM_NOTIFY` 分发表里
+        原本是 `_on_notify`（右键调 `TrackPopupMenuEx`）。这里只拦右键，
+        左键仍交给原处理（= 点图标执行第一项「显示/隐藏窗口」）。
+        """
+        if self._right_click is None or self._icon is None:
+            return False
+        try:
+            from pystray._win32 import win32 as tray_win32
+            handlers = self._icon._message_handlers          # noqa: SLF001
+            notify = handlers[tray_win32.WM_NOTIFY]
+        except Exception:          # noqa: BLE001  别的后端或别版本：不猜内部结构
+            return False
+
+        def hooked(wparam, lparam):
+            if lparam != tray_win32.WM_RBUTTONUP:
+                return notify(wparam, lparam)
+            point = wintypes.POINT()
+            try:
+                tray_win32.GetCursorPos(ctypes.byref(point))
+                where = (int(point.x), int(point.y))
+            except Exception:      # noqa: BLE001  问不到光标：让界面用默认位置
+                where = (0, 0)
+            try:
+                self._post(self._right_click, *where)
+            except Exception:      # noqa: BLE001  托盘线程不能因为界面状态而崩
+                pass
+            return 0
+
+        handlers[tray_win32.WM_NOTIFY] = hooked
+        return True
 
     def _image(self):
         from PIL import Image

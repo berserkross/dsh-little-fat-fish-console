@@ -53,6 +53,9 @@ class FakeApp:
     def _port_owner_text(self):
         return "占用者未知"
 
+    def _close_tray_card(self):
+        self._tray_card = None
+
 
 def _record_switch(app, result):
     """把 _run_switch 换成记录器：记下 (script, args, kwargs) 并返回给定结果。"""

@@ -124,5 +124,56 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(t.running)
 
 
+class RightClickCardTests(unittest.TestCase):
+    """右键要交给自绘卡片，而不是 pystray 的 TrackPopupMenuEx。"""
+
+    def setUp(self):
+        try:
+            from pystray._win32 import win32 as tray_win32
+        except Exception:          # noqa: BLE001 - 非 Windows 或没有后端
+            self.skipTest("pystray 的 win32 后端不可用")
+        self.win32 = tray_win32
+
+    def _installed(self, *, on_right_click):
+        posted, native = [], []
+        t = tray.Tray(post=lambda fn, *args: posted.append((fn, args)),
+                      on_right_click=on_right_click)
+        icon = SimpleNamespace(_message_handlers={
+            self.win32.WM_NOTIFY: lambda w, l: (native.append((w, l)), 7)[1]})
+        t._icon = icon
+        return t, icon, posted, native
+
+    def test_right_click_is_intercepted_and_posted_to_the_main_thread(self):
+        where = []
+        t, icon, posted, native = self._installed(
+            on_right_click=lambda x, y: where.append((x, y)))
+        self.assertTrue(t._hook_right_click())
+        handler = icon._message_handlers[self.win32.WM_NOTIFY]
+        self.assertEqual(handler(0, self.win32.WM_RBUTTONUP), 0)
+        self.assertEqual(native, [])               # 原生菜单根本没被调
+        self.assertEqual(len(posted), 1)           # 只是把「弹卡片」交给主线程
+        fn, args = posted[0]
+        self.assertEqual(len(args), 2)             # (x, y)
+        fn(*args)
+        self.assertEqual(len(where), 1)
+
+    def test_left_click_still_runs_the_original_handler(self):
+        t, icon, _posted, native = self._installed(on_right_click=lambda x, y: None)
+        self.assertTrue(t._hook_right_click())
+        handler = icon._message_handlers[self.win32.WM_NOTIFY]
+        self.assertEqual(handler(0, self.win32.WM_LBUTTONUP), 7)
+        self.assertEqual(native, [(0, self.win32.WM_LBUTTONUP)])
+
+    def test_without_a_card_callback_the_native_menu_stays(self):
+        t, icon, _posted, _native = self._installed(on_right_click=None)
+        self.assertFalse(t._hook_right_click())
+        self.assertEqual(icon._message_handlers[self.win32.WM_NOTIFY](0, 0), 7)
+
+    def test_an_icon_without_the_dispatch_table_is_left_alone(self):
+        t = tray.Tray(post=lambda fn, *args: None, on_right_click=lambda x, y: None)
+        t._icon = SimpleNamespace()                # 别的后端/别的版本
+        self.assertFalse(t._hook_right_click())
+
+
 if __name__ == "__main__":
     unittest.main()

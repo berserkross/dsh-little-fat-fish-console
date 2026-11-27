@@ -72,6 +72,13 @@ class FakeApp:
     def clear_qr(self):
         pass
 
+    def _on_tray_card(self, x, y):
+        """托盘右键卡片的入口：这里只验证托盘起不来时的降级。"""
+        self.card_at = (x, y)
+
+    _on_card_closed = dsh_gui.ConsoleApp._on_card_closed
+    _close_tray_card = dsh_gui.ConsoleApp._close_tray_card
+
     def refresh(self, force=False):
         self.refreshed += 1
 
@@ -333,6 +340,86 @@ class TrayFallbackTests(unittest.TestCase):
         self.assertFalse(app._close_to_tray)
         self.assertEqual(app.lbl_close_hint.kw["text"], "关闭按钮：退出程序")
         self.assertTrue(any("退回普通窗口" in line for line in app.logged))
+
+
+class TrayCardTests(unittest.TestCase):
+    """托盘右键卡片：状态进卡片、危险动作要点两下、弹完顺手刷新、失败只写日志。"""
+
+    app_cls = dsh_gui.ConsoleApp
+
+    def _app(self):
+        app = FakeApp()
+        app._last_status = None
+        app._tray_card = None
+        app._window_label = lambda: "隐藏主窗口"
+        for attr in ("_toggle_window", "_tray_copy", "on_stop", "_quit"):
+            setattr(app, attr, lambda: "ran")
+        return app
+
+    def _card_cls(self, seen, boom=False):
+        class Card:
+            def __init__(self, master, **kw):
+                if boom:
+                    raise RuntimeError("卡片画不出来")
+                self.kw = kw
+                seen.append(("new", kw))
+
+            def arm(self, label, text, action=None):
+                seen.append(("arm", label, text))
+
+            def popup_near(self, x, y):
+                seen.append(("popup", x, y))
+
+            def close(self):
+                seen.append(("close",))
+        return Card
+
+    def test_the_card_gets_the_status_snapshot_and_four_actions(self):
+        app, seen = self._app(), []
+        with mock.patch.object(dsh_gui.traycard, "TrayCard", self._card_cls(seen)):
+            self.app_cls._on_tray_card(app, 100, 200)
+        kind, kw = seen[0]
+        self.assertEqual(kind, "new")
+        self.assertEqual(len(kw["rows"]), 3)
+        labels = [item[0] for item in kw["actions"]]
+        self.assertEqual(labels, ["隐藏主窗口", "复制手机访问地址", "停止 DSH", "退出"])
+        self.assertTrue([item[2] for item in kw["actions"]][2:], "危险动作要标红")
+        self.assertFalse([item[2] for item in kw["actions"]][:2].count(True))
+        self.assertIn(("popup", 100, 200), seen)
+        self.assertEqual(app.refreshed, 1)          # 弹完再刷一次
+        self.assertIsNotNone(app._tray_card)
+
+    def test_the_two_dangerous_actions_need_a_second_click(self):
+        app, seen = self._app(), []
+        with mock.patch.object(dsh_gui.traycard, "TrayCard", self._card_cls(seen)):
+            self.app_cls._on_tray_card(app, 0, 0)
+        armed = [entry for entry in seen if entry[0] == "arm"]
+        self.assertEqual([entry[1] for entry in armed], ["停止 DSH", "退出"])
+        self.assertEqual([entry[2] for entry in armed],
+                         ["再点一次确认停止", "再点一次确认退出"])
+
+    def test_a_second_right_click_replaces_the_old_card(self):
+        app, seen = self._app(), []
+        with mock.patch.object(dsh_gui.traycard, "TrayCard", self._card_cls(seen)):
+            self.app_cls._on_tray_card(app, 1, 1)
+            self.app_cls._on_tray_card(app, 2, 2)
+        self.assertIn(("close",), seen)
+        self.assertEqual(len([entry for entry in seen if entry[0] == "popup"]), 2)
+
+    def test_a_broken_card_does_not_take_the_console_down(self):
+        app = self._app()
+        with mock.patch.object(dsh_gui.traycard, "TrayCard", self._card_cls([], boom=True)):
+            self.app_cls._on_tray_card(app, 0, 0)      # 不该抛
+        self.assertIsNone(app._tray_card)
+        self.assertTrue(any("状态卡片" in line for line in app.logged))
+
+    def test_closing_the_card_clears_the_reference(self):
+        app, seen = self._app(), []
+        with mock.patch.object(dsh_gui.traycard, "TrayCard", self._card_cls(seen)):
+            self.app_cls._on_tray_card(app, 0, 0)
+            self.app_cls._on_card_closed(app)
+            self.assertIsNone(app._tray_card)
+            self.app_cls._close_tray_card(app)         # 已经空着，也不许抛
 
 
 class ResidueChipTests(unittest.TestCase):
